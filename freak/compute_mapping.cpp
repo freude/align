@@ -62,15 +62,19 @@ int main( int argc, char** argv ) {
 
     // DETECTION
     // Any openCV detector such as
-    BRISK detector(10, 3, 1);
+    // BRISK detector(20, 0, 1);
     // SurfFeatureDetector detector(1000,4);
+    // MSER detector;
+    // FastFeatureDetector detector(80, true);
+    // StarDetector detector;
+    SurfFeatureDetector detector( 1000, 4 );
 
     // DESCRIPTOR
     // Our proposed FREAK descriptor
     // (roation invariance, scale invariance, pattern radius corresponding to SMALLEST_KP_SIZE,
     // number of octaves, optional vector containing the selected pairs)
     // FREAK extractor(true, true, 22, 4, vector<int>());
-    FREAK extractor(false, false, 50, 4);
+    FREAK extractor(false, false, 30, 1);
 
     // MATCHER
     // The standard Hamming distance can be used such as
@@ -93,135 +97,59 @@ int main( int argc, char** argv ) {
     extractor.compute(imgA, keypointsA, descriptorsA);
     extractor.compute(imgB, keypointsB, descriptorsB);
     t = ((double)getTickCount() - t)/getTickFrequency();
-    cout << "extraction time [s]: " << t << endl;
+    cout << "extraction (" << descriptorsA.rows << ", " << descriptorsB.rows << ") time [s]: " << t << endl;
 
-    int initial_blocksize = 1024;
-    int end_block_size = 64;
-    
-    // Shifts from A to B
-    Mat shift_x = Mat::zeros(imgA.rows / end_block_size + 1, imgA.cols / end_block_size + 1, CV_32F);
-    Mat shift_y = shift_x.clone();
-    
+    // match
+    vector<DMatch> matches;
     t = (double)getTickCount();
-    // Bin keypoints by position, mapping to index
-    map<pair<int, int>, vector<int> > binsA, binsB;
-
-    for (int idx = 0; idx < keypointsA.size(); idx++) {
-        pair<int, int> key(end_block_size * (int) (keypointsA[idx].pt.x / end_block_size + 0.5),
-                           end_block_size * (int) (keypointsA[idx].pt.y / end_block_size + 0.5));
-        binsA[key].push_back(idx);
-    }
-    for (int idx = 0; idx < keypointsB.size(); idx++) {
-        pair<int, int> key(end_block_size * (int) (keypointsB[idx].pt.x / end_block_size + 0.5),
-                           end_block_size * (int) (keypointsB[idx].pt.y / end_block_size + 0.5));
-        
-        binsB[key].push_back(idx);
-    }
+    matcher.match(descriptorsA, descriptorsB, matches);
+    cout << "Found matches " << matches.size() << endl;
     t = ((double)getTickCount() - t)/getTickFrequency();
-    cout << "binning time [s]: " << t << endl;
+    cout << "matching time [s]: " << t << endl;
 
-    int cur_blocksize = initial_blocksize;
-    for (int cur_blocksize = initial_blocksize; cur_blocksize >= end_block_size; cur_blocksize /= 2) {
-        for (int x = 0; x < imgA.cols; x += cur_blocksize) {
-            for (int y = 0; y < imgA.rows; y += cur_blocksize) {
-                cout << "Block " << x << " " << y << " " << cur_blocksize << endl;
-                // filter keypoints to only use those near the current block
-                t = (double)getTickCount();
-                vector<KeyPoint> local_keypointsA, local_keypointsB;
-                vector<int> local_indicesA = nearby_indices(x, y, cur_blocksize, end_block_size, binsA);
-                cout << "SHIFT " << shift_x.at<float>(x / end_block_size, y / end_block_size) << " " << shift_y.at<float>(x / end_block_size, y / end_block_size) << endl;
-                vector<int> local_indicesB = nearby_indices(x + shift_x.at<float>(x / end_block_size, y / end_block_size),
-                                                            y + shift_y.at<float>(x / end_block_size, y / end_block_size),
-                                                            cur_blocksize, end_block_size, binsB);
-                t = ((double)getTickCount() - t)/getTickFrequency();
-                cout << "local find [s]: " << t << endl;
-                cout << "     " << local_indicesA.size() << " " << local_indicesB.size() << endl;
+    // compute median and MAD of matches
+    vector<float> x_shifts, y_shifts;
+    vector<float> match_distances;
+    for (vector<DMatch>::iterator it = matches.begin(); it != matches.end(); it++) {
+        Point2f delta = keypointsA[it->queryIdx].pt - keypointsB[it->trainIdx].pt;
+        x_shifts.push_back(delta.x);
+        y_shifts.push_back(delta.y);
+    }
+    sort(x_shifts.begin(), x_shifts.end());
+    sort(y_shifts.begin(), y_shifts.end());
+    cout << "X shifts " << x_shifts[x_shifts.size() / 4] << " " << x_shifts[x_shifts.size() / 2] << " " << x_shifts[(x_shifts.size() * 3) / 4] << endl;
+    cout << "Y shifts " << y_shifts[y_shifts.size() / 4] << " " << y_shifts[y_shifts.size() / 2] << " " << y_shifts[(y_shifts.size() * 3) / 4] << endl;
+    float median_X = x_shifts[x_shifts.size() / 2];
+    float median_Y = y_shifts[y_shifts.size() / 2];
+    vector<float> abs_deviations_x, abs_deviations_y;
+    for (int idx = 0; idx < matches.size(); idx++) {
+        abs_deviations_x.push_back(abs(x_shifts[idx] - median_X));
+        abs_deviations_y.push_back(abs(y_shifts[idx] - median_Y));
+    }
+    sort(abs_deviations_x.begin(), abs_deviations_x.end());
+    sort(abs_deviations_y.begin(), abs_deviations_y.end());
+    float MAD_X = abs_deviations_x[abs_deviations_x.size() / 2];
+    float MAD_Y = abs_deviations_y[abs_deviations_y.size() / 2];
+    cout << "MAD " << MAD_X << " " << MAD_Y << endl;
 
-                // Create a copy of the local descriptors
-                Mat local_descriptorsA(local_indicesA.size(), descriptorsA.cols, descriptorsA.depth());
-                Mat local_descriptorsB(local_indicesB.size(), descriptorsB.cols, descriptorsB.depth());
-                vector<int>::iterator it;
-                for (int idx = 0; idx < local_indicesA.size(); idx++)
-                    descriptorsA.row(local_indicesA[idx]).copyTo(local_descriptorsA.row(idx));
-                for (int idx = 0; idx < local_indicesB.size(); idx++)
-                    descriptorsB.row(local_indicesB[idx]).copyTo(local_descriptorsB.row(idx));
-
-                // match
-                vector<DMatch> matches;
-                t = (double)getTickCount();
-                matcher.match(local_descriptorsA, local_descriptorsB, matches);
-                cout << "Found matches " << matches.size() << endl;
-                t = ((double)getTickCount() - t)/getTickFrequency();
-                cout << "matching time [s]: " << t << endl;
-
-                int num_matches_to_use = min(local_indicesA.size(), local_indicesB.size()) / 2;
-                if (num_matches_to_use > 0) {
-                    // find weighted average
-                    double weight = 0.0;
-                    double new_shift_x = 0.0, new_shift_y = 0.0;
-                    sort(matches.begin(), matches.end());
-                    double mindist = matches[0].distance;
-                    for (int idx = 0; idx < num_matches_to_use; idx++) {
-                        Point2f delta = keypointsB[local_indicesB[matches[idx].trainIdx]].pt - \
-                            keypointsA[local_indicesA[matches[idx].queryIdx]].pt;
-                        double curweight = exp(- (matches[idx].distance - mindist));
-                        weight += curweight;
-                        new_shift_x += delta.x * curweight;
-                        new_shift_y += delta.y * curweight;
-                    }
-                    shift_x.at<float>(x / end_block_size, y / end_block_size) = new_shift_x / weight;
-                    shift_y.at<float>(x / end_block_size, y / end_block_size) = new_shift_y / weight;
-                    cout << "    " << new_shift_x / weight << " " << new_shift_y / weight << endl << endl;
-                }
-            }
-        }
-
-        // propagate shifts to neighbors
-        if (cur_blocksize > end_block_size) {
-            map<pair<int, int>, int > neighbor_count;
-            for (int x = 0; x < imgA.cols; x += cur_blocksize) {
-                for (int y = 0; y < imgA.rows; y += cur_blocksize) {
-                    for (int dx = -cur_blocksize / 2; dx <= cur_blocksize / 2; dx += cur_blocksize / 2)
-                        for(int dy = -cur_blocksize / 2; dy <= cur_blocksize / 2; dy += cur_blocksize / 2) {
-                            int neighborx = x + dx;
-                            int neighbory = y + dy;
-                            if ((neighborx >= 0) && (neighborx < imgA.cols) &&
-                                (neighbory >= 0) && (neighbory < imgA.rows)) {
-                                pair<int, int> key(neighborx, neighbory);
-                                if (neighbor_count.count(key))
-                                    neighbor_count[key]++;
-                                else
-                                    neighbor_count[key] = 1;
-
-                                // running mean
-                                float oldval = shift_x.at<float>(neighborx / end_block_size, neighbory / end_block_size);
-                                shift_x.at<float>(neighborx / end_block_size, neighbory / end_block_size) += \
-                                    (shift_x.at<float>(x / end_block_size, y / end_block_size) - oldval) / neighbor_count[key];
-                                oldval = shift_y.at<float>(neighborx / end_block_size, neighbory / end_block_size);
-                                shift_y.at<float>(neighborx / end_block_size, neighbory / end_block_size) += \
-                                    (shift_y.at<float>(x / end_block_size, y / end_block_size) - oldval) / neighbor_count[key];
-                            }
-                        }
-                }
-            }
-        }
+    // filter for sane matches, those with <= 3 sigma_mad = 3 * 1.48 * MAD
+    vector<DMatch> good_matches;
+    for (vector<DMatch>::iterator it = matches.begin(); it != matches.end(); it++) {
+        Point2f delta = keypointsA[it->queryIdx].pt - keypointsB[it->trainIdx].pt;
+        if (abs(delta.x - median_X) < 3.0 * 1.48 * MAD_X &&
+            abs(delta.y - median_Y) < 3.0 * 1.48 * MAD_Y)
+            good_matches.push_back(*it);
     }
 
-    std::vector<Point> srcP, dstP;
-    for (int xidx = 0; xidx < shift_x.cols; xidx++) {
-        for (int yidx = 0; yidx < shift_y.rows; yidx++) {
-            srcP.push_back(Point(xidx * end_block_size, yidx * end_block_size));
-            dstP.push_back(Point(xidx * end_block_size + shift_x.at<float>(xidx, yidx),
-                                 yidx * end_block_size + shift_y.at<float>(xidx, yidx)));
-        }
-    }
-    CThinPlateSpline tps(srcP, dstP);
-    
-    // warp the image to dst
-    Mat dst;
-    tps.warpImage(imgA,dst, 0.1, INTER_LINEAR, BACK_WARP);
-    imshow("orig", imgA);
-    imshow("warp", dst);
-    imshow("second", imgB);
+    cout << "Good matches " << good_matches.size() <<endl;
+
+    // Draw matches
+    Mat imgMatch;
+    random_shuffle(good_matches.begin(), good_matches.end());
+    vector<DMatch> curgood_matches(good_matches.begin(), good_matches.begin() + 100);
+    drawMatches(imgA, keypointsA, imgB, keypointsB, curgood_matches, imgMatch);
+    namedWindow("good_matches", CV_WINDOW_KEEPRATIO);
+    imshow("good_matches", imgMatch);
     waitKey(0);
+
 }

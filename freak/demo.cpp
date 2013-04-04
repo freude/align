@@ -136,11 +136,12 @@ int main( int argc, char** argv ) {
 
     // Draw matches
     Mat imgMatch;
-    std::sort(matches.begin(), matches.end());
-    matches.erase(matches.begin() + 100, matches.end());
-    drawMatches(imgA, keypointsA, imgB, keypointsB, matches, imgMatch);
-
-    namedWindow("matches", CV_WINDOW_KEEPRATIO);
-    imshow("matches", imgMatch);
-    waitKey(0);
+    while (1) {
+        std::random_shuffle(matches.begin(), matches.end());
+        std::vector<DMatch> curmatches(matches.begin(), matches.begin() + 100);
+        drawMatches(imgA, keypointsA, imgB, keypointsB, curmatches, imgMatch);
+        namedWindow("matches", CV_WINDOW_KEEPRATIO);
+        imshow("matches", imgMatch);
+        waitKey(0);
+    }
 }
