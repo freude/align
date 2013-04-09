@@ -8,9 +8,16 @@
 #include <opencv2/nonfree/nonfree.hpp>
 #include <opencv2/legacy/legacy.hpp>
 #include "CThinPlateSpline.h"
+#include <H5Cpp.h>
 
 using namespace cv;
+using namespace H5;
 using namespace std;
+
+H5File create_hdf5_file(char *filename);
+H5File open_hdf5_file(char *filename);
+void write_hdf5_image(H5File h5f, const char *name, const Mat &im);
+void read_hdf5_image(H5File h5f, Mat &image_out, const char *name, const Rect &roi=Rect(0,0,0,0));
 
 static vector<int>
 nearby_indices(int x, int y, int cur_blocksize, int end_block_size,
@@ -30,7 +37,7 @@ nearby_indices(int x, int y, int cur_blocksize, int end_block_size,
     return out;
 }
             
-
+#define OCTAVE 3
 
 int main( int argc, char** argv ) {
     // check http://opencv.itseez.com/doc/tutorials/features2d/table_of_content_features2d/table_of_content_features2d.html
@@ -48,12 +55,12 @@ int main( int argc, char** argv ) {
         cout << " --(!) Error reading image " << argv[2] << endl;
         return -1;
     }
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < OCTAVE; i++) {
         medianBlur(imgA, imgA, 3);
         resize(imgA, imgA, Size(0, 0), 1.0 / 2, 1.0 / 2, INTER_CUBIC);
     }
 
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < OCTAVE; i++) {
         medianBlur(imgB, imgB, 3);
         resize(imgB, imgB, Size(0, 0), 1.0 / 2, 1.0 / 2, INTER_CUBIC);
     }
@@ -74,7 +81,7 @@ int main( int argc, char** argv ) {
     // (roation invariance, scale invariance, pattern radius corresponding to SMALLEST_KP_SIZE,
     // number of octaves, optional vector containing the selected pairs)
     // FREAK extractor(true, true, 22, 4, vector<int>());
-    FREAK extractor(false, false, 30, 1);
+    FREAK extractor(false, false, 25, 1);
 
     // MATCHER
     // The standard Hamming distance can be used such as
@@ -136,20 +143,64 @@ int main( int argc, char** argv ) {
     vector<DMatch> good_matches;
     for (vector<DMatch>::iterator it = matches.begin(); it != matches.end(); it++) {
         Point2f delta = keypointsA[it->queryIdx].pt - keypointsB[it->trainIdx].pt;
-        if (abs(delta.x - median_X) < 3.0 * 1.48 * MAD_X &&
-            abs(delta.y - median_Y) < 3.0 * 1.48 * MAD_Y)
+        if (abs(delta.x - median_X) < 2.0 * 1.48 * MAD_X &&
+            abs(delta.y - median_Y) < 2.0 * 1.48 * MAD_Y)
             good_matches.push_back(*it);
     }
 
     cout << "Good matches " << good_matches.size() <<endl;
 
-    // Draw matches
-    Mat imgMatch;
-    random_shuffle(good_matches.begin(), good_matches.end());
-    vector<DMatch> curgood_matches(good_matches.begin(), good_matches.begin() + 100);
-    drawMatches(imgA, keypointsA, imgB, keypointsB, curgood_matches, imgMatch);
-    namedWindow("good_matches", CV_WINDOW_KEEPRATIO);
-    imshow("good_matches", imgMatch);
-    waitKey(0);
+//     // Draw matches
+//     Mat imgMatch;
+//     random_shuffle(good_matches.begin(), good_matches.end());
+//     vector<DMatch> curgood_matches(good_matches.begin(), good_matches.begin() + 100);
+//     drawMatches(imgA, keypointsA, imgB, keypointsB, curgood_matches, imgMatch);
+//     namedWindow("good_matches", CV_WINDOW_KEEPRATIO);
+//     imshow("good_matches", imgMatch);
+//     waitKey(0);
+// 
+    // create map by diffusion
+    Mat xmap = Mat::zeros(imgA.size(), CV_32F);
+    Mat ymap = Mat::zeros(imgA.size(), CV_32F);
+    Mat weight = Mat::zeros(imgA.size(), CV_32F);
+    for (vector<DMatch>::iterator it = good_matches.begin(); it != good_matches.end(); it++) {
+        // map points in A onto B
+        Point2f delta = keypointsB[it->trainIdx].pt - keypointsA[it->queryIdx].pt;
+        xmap.at<float>(keypointsA[it->queryIdx].pt) = delta.x;
+        ymap.at<float>(keypointsA[it->queryIdx].pt) = delta.y;
+        weight.at<float>(keypointsA[it->queryIdx].pt) = 1.0;
+    }
+    for (int iter = 0; iter < 4; iter++) {
+        GaussianBlur(xmap, xmap, Size(0, 0), 10.0);
+        GaussianBlur(ymap, ymap, Size(0, 0), 10.0);
+        GaussianBlur(weight, weight, Size(0, 0), 10.0);
+    }
+    add(weight, weight == 0, weight, noArray(), CV_32F);
+    xmap = xmap / weight;
+    ymap = ymap / weight;
+    
+    for (int xbase = 0; xbase < imgA.cols; xbase++) {
+        for (int ybase = 0; ybase < imgA.rows; ybase++) {
+            xmap.at<float>(ybase, xbase) += xbase;
+            ymap.at<float>(ybase, xbase) += ybase;
+        }
+    }
 
+    H5File out_hdf5 = create_hdf5_file(argv[3]);
+    write_hdf5_image(out_hdf5, "warp_rough_x", xmap);
+    write_hdf5_image(out_hdf5, "warp_rough_y", ymap);
+
+#if 0
+    Mat warpedB;
+    remap(imgB, warpedB, xmap, ymap, INTER_LINEAR);
+    while (1) {
+        cout << "wB" << endl;
+        imshow("warped", warpedB);
+        waitKey(0);
+        
+        cout << "A" << endl;
+        imshow("warped", imgA);
+        waitKey(0);
+    }
+#endif
 }
