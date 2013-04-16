@@ -37,7 +37,7 @@ nearby_indices(int x, int y, int cur_blocksize, int end_block_size,
     return out;
 }
             
-#define OCTAVE 3
+#define OCTAVES 3
 
 int main( int argc, char** argv ) {
     // check http://opencv.itseez.com/doc/tutorials/features2d/table_of_content_features2d/table_of_content_features2d.html
@@ -55,12 +55,12 @@ int main( int argc, char** argv ) {
         cout << " --(!) Error reading image " << argv[2] << endl;
         return -1;
     }
-    for (int i = 0; i < OCTAVE; i++) {
+    for (int i = 0; i < OCTAVES; i++) {
         medianBlur(imgA, imgA, 3);
         resize(imgA, imgA, Size(0, 0), 1.0 / 2, 1.0 / 2, INTER_CUBIC);
     }
 
-    for (int i = 0; i < OCTAVE; i++) {
+    for (int i = 0; i < OCTAVES; i++) {
         medianBlur(imgB, imgB, 3);
         resize(imgB, imgB, Size(0, 0), 1.0 / 2, 1.0 / 2, INTER_CUBIC);
     }
@@ -139,7 +139,7 @@ int main( int argc, char** argv ) {
     float MAD_Y = abs_deviations_y[abs_deviations_y.size() / 2];
     cout << "MAD " << MAD_X << " " << MAD_Y << endl;
 
-    // filter for sane matches, those with <= 3 sigma_mad = 3 * 1.48 * MAD
+    // filter for sane matches, those with <= 2 sigma_mad = 2 * 1.48 * MAD
     vector<DMatch> good_matches;
     for (vector<DMatch>::iterator it = matches.begin(); it != matches.end(); it++) {
         Point2f delta = keypointsA[it->queryIdx].pt - keypointsB[it->trainIdx].pt;
@@ -150,15 +150,20 @@ int main( int argc, char** argv ) {
 
     cout << "Good matches " << good_matches.size() <<endl;
 
-//     // Draw matches
-//     Mat imgMatch;
-//     random_shuffle(good_matches.begin(), good_matches.end());
-//     vector<DMatch> curgood_matches(good_matches.begin(), good_matches.begin() + 100);
-//     drawMatches(imgA, keypointsA, imgB, keypointsB, curgood_matches, imgMatch);
-//     namedWindow("good_matches", CV_WINDOW_KEEPRATIO);
-//     imshow("good_matches", imgMatch);
-//     waitKey(0);
-// 
+    H5File out_hdf5 = create_hdf5_file(argv[3]);
+    Mat warp_map = Mat::zeros(good_matches.size(), 4, CV_32F);
+    int idx = 0;
+    for (vector<DMatch>::iterator it = good_matches.begin(); it != good_matches.end(); it++) {
+        Point2f ptA = keypointsA[it->queryIdx].pt;
+        Point2f ptB = keypointsB[it->trainIdx].pt;
+        warp_map.at<float>(idx, 0) = ptA.x * (1 << OCTAVES);
+        warp_map.at<float>(idx, 1) = ptA.y * (1 << OCTAVES);
+        warp_map.at<float>(idx, 2) = ptB.x * (1 << OCTAVES);
+        warp_map.at<float>(idx, 3) = ptB.y * (1 << OCTAVES);
+        idx++;
+    }
+    write_hdf5_image(out_hdf5, "match_points", warp_map);
+    
     // create map by diffusion
     Mat xmap = Mat::zeros(imgA.size(), CV_32F);
     Mat ymap = Mat::zeros(imgA.size(), CV_32F);
@@ -170,7 +175,7 @@ int main( int argc, char** argv ) {
         ymap.at<float>(keypointsA[it->queryIdx].pt) = delta.y;
         weight.at<float>(keypointsA[it->queryIdx].pt) = 1.0;
     }
-    for (int iter = 0; iter < 4; iter++) {
+    for (int iter = 0; iter < 10; iter++) {
         GaussianBlur(xmap, xmap, Size(0, 0), 10.0);
         GaussianBlur(ymap, ymap, Size(0, 0), 10.0);
         GaussianBlur(weight, weight, Size(0, 0), 10.0);
@@ -179,28 +184,18 @@ int main( int argc, char** argv ) {
     xmap = xmap / weight;
     ymap = ymap / weight;
     
+    // shift and put into 0-1
     for (int xbase = 0; xbase < imgA.cols; xbase++) {
         for (int ybase = 0; ybase < imgA.rows; ybase++) {
             xmap.at<float>(ybase, xbase) += xbase;
+            xmap.at<float>(ybase, xbase) /= imgA.cols;
             ymap.at<float>(ybase, xbase) += ybase;
+            ymap.at<float>(ybase, xbase) /= imgA.rows;
         }
     }
-
-    H5File out_hdf5 = create_hdf5_file(argv[3]);
-    write_hdf5_image(out_hdf5, "warp_rough_x", xmap);
-    write_hdf5_image(out_hdf5, "warp_rough_y", ymap);
-
-#if 0
-    Mat warpedB;
-    remap(imgB, warpedB, xmap, ymap, INTER_LINEAR);
-    while (1) {
-        cout << "wB" << endl;
-        imshow("warped", warpedB);
-        waitKey(0);
-        
-        cout << "A" << endl;
-        imshow("warped", imgA);
-        waitKey(0);
-    }
-#endif
+    //     Mat warpedB;
+    //     remap(imgB, warpedB, xmap, ymap, INTER_LINEAR);
+    write_hdf5_image(out_hdf5, "column_map", xmap);
+    write_hdf5_image(out_hdf5, "row_map", ymap);
+    out_hdf5.close();
 }

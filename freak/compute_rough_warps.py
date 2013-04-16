@@ -12,7 +12,13 @@ if __name__ == '__main__':
     for idx in range(len(filenames) - 1):
         outfile = os.path.join(outdir, "rough_warp.{0:04}.to.{1:04}.hdf5".format(idx, idx + 1))
         find_rough_warp(filenames[idx], filenames[idx + 1], outfile)
-        print "Done", filenames[idx], filenames[idx + 1], outfile, '/', idx / len(filenames) - 1
+        print "Done", filenames[idx], filenames[idx + 1], outfile, '/', idx, '/',  len(filenames) - 1
         warpfile.write("ROUGH_WARP: {} to {} : {}\n".format(filenames[idx],
                                                             filenames[idx + 1],
+                                                            outfile))
+        outfile = os.path.join(outdir, "rough_warp.{0:04}.to.{1:04}.hdf5".format(idx + 1, idx))
+        find_rough_warp(filenames[idx + 1], filenames[idx], outfile)
+        print "Done", filenames[idx + 1], filenames[idx], outfile, '/', idx, '/',  len(filenames) - 1
+        warpfile.write("ROUGH_WARP: {} to {} : {}\n".format(filenames[idx + 1],
+                                                            filenames[idx],
                                                             outfile))
