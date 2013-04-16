@@ -7,7 +7,6 @@
 #include <opencv2/features2d/features2d.hpp>
 #include <opencv2/nonfree/nonfree.hpp>
 #include <opencv2/legacy/legacy.hpp>
-#include "CThinPlateSpline.h"
 #include <H5Cpp.h>
 
 using namespace cv;
@@ -143,8 +142,8 @@ int main( int argc, char** argv ) {
     vector<DMatch> good_matches;
     for (vector<DMatch>::iterator it = matches.begin(); it != matches.end(); it++) {
         Point2f delta = keypointsA[it->queryIdx].pt - keypointsB[it->trainIdx].pt;
-        if (abs(delta.x - median_X) < 2.0 * 1.48 * MAD_X &&
-            abs(delta.y - median_Y) < 2.0 * 1.48 * MAD_Y)
+        if (abs(delta.x - median_X) <= 2.0 * 1.48 * MAD_X &&
+            abs(delta.y - median_Y) <= 2.0 * 1.48 * MAD_Y)
             good_matches.push_back(*it);
     }
 
