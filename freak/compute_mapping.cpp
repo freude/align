@@ -7,6 +7,7 @@
 #include <opencv2/features2d/features2d.hpp>
 #include <opencv2/nonfree/nonfree.hpp>
 #include <opencv2/legacy/legacy.hpp>
+#include <opencv2/video/tracking.hpp>
 #include <H5Cpp.h>
 
 using namespace cv;
@@ -17,6 +18,19 @@ H5File create_hdf5_file(char *filename);
 H5File open_hdf5_file(char *filename);
 void write_hdf5_image(H5File h5f, const char *name, const Mat &im);
 void read_hdf5_image(H5File h5f, Mat &image_out, const char *name, const Rect &roi=Rect(0,0,0,0));
+
+Point2f operator*(Mat M, const Point2f& p) {
+    Mat src(3/*rows*/, 1 /* cols */, CV_64F); 
+    src.at<double>(0, 0) = p.x; 
+    src.at<double>(1, 0) = p.y; 
+    src.at<double>(2, 0) = 1.0; 
+    Mat dst = M*src;
+    return Point2f(dst.at<double>(0,0),dst.at<double>(1,0)); 
+}
+
+Point2f operator*(Mat M, const KeyPoint& p) {
+    return M * p.pt; 
+}
 
 static vector<int>
 nearby_indices(int x, int y, int cur_blocksize, int end_block_size,
@@ -120,13 +134,17 @@ int main( int argc, char** argv ) {
         Point2f delta = keypointsA[it->queryIdx].pt - keypointsB[it->trainIdx].pt;
         x_shifts.push_back(delta.x);
         y_shifts.push_back(delta.y);
+        match_distances.push_back(norm(delta));
     }
     sort(x_shifts.begin(), x_shifts.end());
     sort(y_shifts.begin(), y_shifts.end());
+    sort(match_distances.begin(), match_distances.end());
     cout << "X shifts " << x_shifts[x_shifts.size() / 4] << " " << x_shifts[x_shifts.size() / 2] << " " << x_shifts[(x_shifts.size() * 3) / 4] << endl;
     cout << "Y shifts " << y_shifts[y_shifts.size() / 4] << " " << y_shifts[y_shifts.size() / 2] << " " << y_shifts[(y_shifts.size() * 3) / 4] << endl;
+    cout << "L2 " << match_distances[match_distances.size() / 4] << " " << match_distances[match_distances.size() / 2] << " " << match_distances[(match_distances.size() * 3) / 4] << endl;
     float median_X = x_shifts[x_shifts.size() / 2];
     float median_Y = y_shifts[y_shifts.size() / 2];
+    float median_L2 = match_distances[match_distances.size() / 2];
     vector<float> abs_deviations_x, abs_deviations_y;
     for (int idx = 0; idx < matches.size(); idx++) {
         abs_deviations_x.push_back(abs(x_shifts[idx] - median_X));
@@ -136,7 +154,7 @@ int main( int argc, char** argv ) {
     sort(abs_deviations_y.begin(), abs_deviations_y.end());
     float MAD_X = abs_deviations_x[abs_deviations_x.size() / 2];
     float MAD_Y = abs_deviations_y[abs_deviations_y.size() / 2];
-    cout << "MAD " << MAD_X << " " << MAD_Y << endl;
+    cout << "MAD " << MAD_X << " " << MAD_Y << " " << sqrt(MAD_X * MAD_X + MAD_Y * MAD_Y) << endl;
 
     // filter for sane matches, those with <= 2 sigma_mad = 2 * 1.48 * MAD
     vector<DMatch> good_matches;
