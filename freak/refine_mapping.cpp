@@ -81,7 +81,7 @@ int main( int argc, char** argv ) {
     Mat new_col_warp = Mat::zeros(img1.rows / STEP, img1.cols / STEP, CV_32F);
     Mat match_weight = Mat::zeros(img1.rows / STEP, img1.cols / STEP, CV_32F);
     for (int img1_row = 0; img1_row < img1.rows; img1_row += STEP) {
-        cout << img1_row << " / " << img1.rows << endl;
+        // cout << img1_row << " / " << img1.rows << endl;
         float warp_i = row_warp.rows * float(img1_row) / img1.rows;
         for (int img1_col = 0; img1_col < img1.cols; img1_col += STEP) {
             float warp_j = row_warp.cols * float(img1_col) / img1.cols;
@@ -119,18 +119,6 @@ int main( int argc, char** argv ) {
                 
                 // cout << "   new (" << (int) (new_row * img2.rows) << ", " << (int) (new_col * img2.cols) << ") weight " << w << endl;
 
-                if (0 * img1_col == 30 * STEP) {
-                    cout << "dis" << img1_row << " " << img1_col << endl;
-                    cout << " " << rlo2 << " " << clo2 << endl;
-                    normalize( result, result, 0, 1, NORM_MINMAX, -1, Mat() );
-                    imshow("img1", subimg1);
-                    imshow("img2", subimg2);
-                    imshow("result", result);
-                    Rect matchrect(maxLoc.x , maxLoc.y, TEMPLATE_SIZE, TEMPLATE_SIZE);
-                    matchrect &= Rect(0, 0, subimg2.cols, subimg2.rows);
-                    imshow("match", subimg2(matchrect));
-                    waitKey(0);
-                }
             }
         }
     }
@@ -144,15 +132,15 @@ int main( int argc, char** argv ) {
     new_row_warp = new_row_warp / match_weight;
     new_col_warp = new_col_warp / match_weight;
     
-    Mat disp_row_warp, disp_col_warp;
-    normalize( new_row_warp, disp_row_warp, 0, 1, NORM_MINMAX, -1, Mat() );
-    imshow("row", disp_row_warp);
-    normalize( new_col_warp, disp_col_warp, 0, 1, NORM_MINMAX, -1, Mat() );
-    imshow("col", disp_col_warp);
-    normalize( match_weight, match_weight, 0, 1, NORM_MINMAX, -1, Mat() );
-    imshow("w", match_weight);
-    waitKey(0);
-
+//     Mat disp_row_warp, disp_col_warp;
+//     normalize( new_row_warp, disp_row_warp, 0, 1, NORM_MINMAX, -1, Mat() );
+//     imshow("row", disp_row_warp);
+//     normalize( new_col_warp, disp_col_warp, 0, 1, NORM_MINMAX, -1, Mat() );
+//     imshow("col", disp_col_warp);
+//     normalize( match_weight, match_weight, 0, 1, NORM_MINMAX, -1, Mat() );
+//     imshow("w", match_weight);
+//     waitKey(0);
+// 
     // convert from deltas to raw coords
     for (int img1_row = 0; img1_row < img1.rows; img1_row += STEP) {
         for (int img1_col = 0; img1_col < img1.cols; img1_col += STEP) {
@@ -166,13 +154,13 @@ int main( int argc, char** argv ) {
     write_hdf5_image(out_hdf5, "column_map", new_col_warp);
     out_hdf5.close();
 
-    normalize( new_row_warp, new_row_warp, 0, 1, NORM_MINMAX, -1, Mat() );
-    imshow("row", new_row_warp);
-    normalize( new_col_warp, new_col_warp, 0, 1, NORM_MINMAX, -1, Mat() );
-    imshow("col", new_col_warp);
-    normalize( match_weight, match_weight, 0, 1, NORM_MINMAX, -1, Mat() );
-    imshow("w", match_weight);
-    waitKey(0);
-    waitKey(0);
-
+//     normalize( new_row_warp, new_row_warp, 0, 1, NORM_MINMAX, -1, Mat() );
+//     imshow("row", new_row_warp);
+//     normalize( new_col_warp, new_col_warp, 0, 1, NORM_MINMAX, -1, Mat() );
+//     imshow("col", new_col_warp);
+//     normalize( match_weight, match_weight, 0, 1, NORM_MINMAX, -1, Mat() );
+//     imshow("w", match_weight);
+//     waitKey(0);
+//     waitKey(0);
+// 
 }
