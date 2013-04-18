@@ -6,7 +6,7 @@ import scipy.sparse.linalg as linalg
 import pylab
 import invdisttree
 
-RIGIDITY_WEIGHT = 10.0
+RIGIDITY_WEIGHT = .1
 
 if __name__ == '__main__':
     warps = sys.argv[1:]
@@ -122,30 +122,38 @@ minj = new_jvals.min()
 new_ivals -= mini
 new_jvals -= minj
 
-maxi = new_ivals.max()
-maxj = new_jvals.max()
+maxi = int(new_ivals.max() + 1)
+maxj = int(new_jvals.max() + 1)
 
 origi, origj = np.mgrid[:warp_shape[0], :warp_shape[1]]
-origcoords = np.column_stack((origi.ravel(), origj.ravel()))
+origcoords = np.column_stack((origi.ravel() / float(warp_shape[0]),
+                              origj.ravel() / float(warp_shape[1])))
 
 for widx, w in enumerate(warps):
     sl = slice(widx * base_pts, (widx + 1) * base_pts)
-    wi = new_ivals[sl]
-    wj = new_jvals[sl]
+    wi = new_ivals[sl] / maxi
+    wj = new_jvals[sl] / maxj
+
+    print widx, "0, 0 mapped to ", wi[0], wj[0]
 
     # interpolate as deltas
     idt = invdisttree.Invdisttree(np.column_stack((wi, wj)),
-                                  np.column_stack((wi, wj)) - origcoords)
+                                  origcoords - np.column_stack((wi, wj)))
 
-    qi, qj = np.mgrid[:(maxi + 1), :(maxj + 1)]
-    query = np.column_stack((qi.ravel(), qj.ravel()))
+    qi, qj = np.mgrid[:maxi, :maxj]
+    query = np.column_stack((qi.ravel() / float(maxi), qj.ravel() / float(maxj)))
     interped_ij = idt(query)
 
-    interped_i = (qi + interped_ij[:, 0].reshape(qi.shape)) / maxi
-    interped_j = (qj + interped_ij[:, 1].reshape(qi.shape)) / maxj
+    print "    q:", idt((wi[0], wj[0]))
+    print "    q:", idt((0, 0))
+
+    interped_i = interped_ij[:, 0].reshape(qi.shape) + (qi / float(maxi))
+    interped_j = interped_ij[:, 1].reshape(qi.shape) + (qj / float(maxj))
+    print "     ", interped_i[0, 0], interped_j[0, 0]
     f = h5py.File(w + 'global', 'w')
     c1 = f.create_dataset('row_map', interped_i.shape, dtype=np.float)
     c1[...] = interped_i
     c2 = f.create_dataset('column_map', interped_i.shape, dtype=np.float)
     c2[...] = interped_j
     f.close()
+    print w + 'global'
