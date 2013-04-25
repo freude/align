@@ -30,10 +30,17 @@ class Warpinfo(object):
                     self.independent_sets[s].add(src)
                     break
 
+        self.window_low = 0
+        self.window_high = self.num_images
+
         # create the positions file
         self.positions_hdf5 = h5py.File(os.path.join(self.positions_dir, "POSITIONS.hdf5"))
 
         self.hdf5_lock = threading.Lock()
+
+    def set_window(self, lo, hi):
+        self.window_low = lo
+        self.window_high = hi
 
     def parse_warpfile(self, fname):
         f = open(fname)
@@ -106,6 +113,9 @@ class Warpinfo(object):
         for dest in dests:
             if oneway and (dest > idx):
                 continue
+            if (dest >= self.window_high):
+                # do not consider neighbors above the window
+                continue
             d_ipos, d_jpos = self.get_warped_positions(idx, dest)
             mask = ~ np.isnan(d_ipos)
             Y = np.row_stack((d_ipos[mask], d_jpos[mask]))
@@ -156,6 +166,8 @@ class Warpinfo(object):
         return change
 
     def align_nonlinear(self, src):
+        if (src < self.window_low) or (src >= self.window_high):
+            return
         # grab current positions
         old_i, old_j = self.get_positions(src)
         # do a rigid alignment to neighbors
@@ -164,6 +176,9 @@ class Warpinfo(object):
         nl = NonlinearWarper()
         nl.add_rigidity(*self.get_positions(src))
         for dest in self.warp_dests[src]:
+            if (dest >= self.window_high):
+                # do not consider neighbors above the window
+                continue
             w = link_weight * (self.falloff ** abs(src - dest))
             nl.add_neighbor(*self.get_warped_positions(src, dest),
                              weight=w)
@@ -324,15 +339,23 @@ if __name__ == '__main__':
                 change = max(warpinfo.align_rigid(idx), change)
             print "RIGID prewarp, max delta:", change
 
-    pool = ThreadPool(1)
+    pool = ThreadPool(8)
     # looping nonlinear warping
-    change = 10
-    while change > .5:
-        change = 0
-        for s, idxs in warpinfo.independent_sets.iteritems():
-            changes = pool.map_async(warpinfo.align_nonlinear, idxs).get()
-            change = max(change, max(changes))
-        print "Nonlinear adjustment, max delta:", change
+    window_size = 20
+    for window_low in range(warpinfo.num_images - window_size):
+        warpinfo.set_window(window_low, window_low + window_size)
+
+        # always align the newest entry in the window, first
+        print "PRE", window_low + window_size - 1,
+        print warpinfo.align_nonlinear(window_low + window_size - 1)
+
+        change = 10
+        while change > .25:
+            change = 0
+            for s, idxs in warpinfo.independent_sets.iteritems():
+                changes = pool.map_async(warpinfo.align_nonlinear, idxs).get()
+                change = max(change, max(changes))
+            print "Nonlinear adjustment, max delta:", change, window_low
 
     sys.exit(0)
     warpinfo.create_global_warps()
