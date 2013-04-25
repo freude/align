@@ -2,6 +2,8 @@ import sys
 import numpy as np
 import scipy.sparse as sparse
 import scipy.sparse.linalg as linalg
+import time
+import cg
 
 class NonlinearWarper(object):
     def __init__(self):
@@ -54,17 +56,28 @@ class NonlinearWarper(object):
             self.rvals.append(weight * rv)
             self.base_row_idx += t0.size
 
-    def solve(self):
+    def solve(self, prev_positions=None):
+        Csize = 2 * self.i_indices.size
+        # add damping
+        self.rows.append(self.base_row_idx + np.arange(Csize))
+        self.cols.append(np.arange(Csize))
+        self.lvals.append(np.ones(Csize) * 0.001)
+        self.rvals.append(np.zeros(Csize))
+
+        x0 = np.hstack((v.ravel() for v in prev_positions))
+
+        # build matrix
         rows = np.hstack([r.ravel() for r in self.rows])
         cols = np.hstack([c.ravel() for c in self.cols])
         lvals = np.hstack([l.ravel() for l in self.lvals])
         rvals = np.hstack([r.ravel() for r in self.rvals])
-
         Rsize = rows.max() + 1
-        Csize = 2 * self.i_indices.size
         M = sparse.coo_matrix((lvals, (rows, cols)),
                               (Rsize, Csize)).tocsr()
-        V = linalg.lsqr(M, rvals.reshape((-1, 1)), show=False, damp=0.001)
+        t0 = time.time()
+        # V = linalg.lsqr(M.T * M, M.T * rvals.reshape((-1, 1)), show=False, damp=0.001)
+        V = cg.cg(M.T * M, M.T * rvals.reshape((-1, 1)), x0=None)
+        # print "   solved in", time.time() - t0, "NNZ", M.nnz, (M.T * M).nnz
         new_ivals = V[0][:self.i_indices.size].reshape(self.i_indices.shape)
         new_jvals = V[0][self.i_indices.size:].reshape(self.i_indices.shape)
         return new_ivals, new_jvals

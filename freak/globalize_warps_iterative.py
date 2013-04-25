@@ -167,7 +167,7 @@ class Warpinfo(object):
             w = link_weight * (self.falloff ** abs(src - dest))
             nl.add_neighbor(*self.get_warped_positions(src, dest),
                              weight=w)
-        new_i, new_j = nl.solve()
+        new_i, new_j = nl.solve(prev_positions=(old_i, old_j))
         change = max(abs(new_i - old_i).max(), abs(new_j - old_j).max())
         with self.hdf5_lock:
             print "    NONLINEAR", src, change
