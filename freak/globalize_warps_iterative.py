@@ -2,6 +2,9 @@ import sys
 import os
 from collections import defaultdict
 
+from multiprocessing.pool import ThreadPool
+import threading
+
 import cv2
 import h5py
 import numpy as np
@@ -14,9 +17,23 @@ link_weight = 1.0
 
 class Warpinfo(object):
     def __init__(self, warpfile, falloff=0.5, positions_dir="POSITIONS"):
-        self.parse_warpfile(warpfile)
         self.falloff = falloff
         self.positions_dir = positions_dir
+        self.parse_warpfile(warpfile)
+
+        # build independent sets
+        self.independent_sets = defaultdict(set)
+        for src in range(self.num_images):
+            # add src to the first set that doesn't have any of its destinations
+            for s in range(self.num_images):
+                if all(d not in self.independent_sets[s] for d in self.warp_dests[src]):
+                    self.independent_sets[s].add(src)
+                    break
+
+        # create the positions file
+        self.positions_hdf5 = h5py.File(os.path.join(self.positions_dir, "POSITIONS.hdf5"))
+
+        self.hdf5_lock = threading.Lock()
 
     def parse_warpfile(self, fname):
         f = open(fname)
@@ -33,11 +50,33 @@ class Warpinfo(object):
             images.add(dest)
         self.images = list(set(images))
         self.num_images = len(self.images)
-        self.open_hdfs = {}
+        self.create_warps_hdf5()
+
+    def create_warps_hdf5(self):
+        numwarps = len(self.warps)
+        print "CREATING WARP FILE"
+
+        # initialize the full warp file
+        self.warps_hdf5 = h5py.File(os.path.join(self.positions_dir, "WARPS.hdf5"))
+        f = h5py.File(self.warps[0, self.warp_dests[0][0]], 'r')
+        w = f['row_map']
+        rows = self.warps_hdf5.require_dataset('row_map', tuple([numwarps] + list(w.shape)),
+                                               chunks=(1, 32, 32), dtype=w.dtype, compression='gzip')
+        cols = self.warps_hdf5.require_dataset('column_map', tuple([numwarps] + list(w.shape)),
+                                               chunks=(1, 32, 32), dtype=w.dtype, compression='gzip')
+        f.close()
+
+        # load each warp
+        self.warp_idx = {}
+        for (s, d), wf in self.warps.iteritems():
+            print len(self.warp_idx), '/', len(self.warps)
+            idx = self.warp_idx[s, d] = len(self.warp_idx)
+            f = h5py.File(wf, 'r')
+            rows[idx, ...] = f['row_map'][...]
+            cols[idx, ...] = f['column_map'][...]
+            f.close()
 
     def init_positions(self, src):
-        if os.path.exists(self.position_file(src)):
-            return
         # get a warp from this src
         dest = self.warp_dests[src][0]
         shape = self.row_warp(src, dest).shape
@@ -46,7 +85,15 @@ class Warpinfo(object):
         jpos -= jpos.mean()
         self.set_positions(src, ipos, jpos)
 
-    def align_rigid(self, idx):
+    def init_positions_from_existing(self, oldi, oldj, idx):
+        dest = self.warp_dests[idx][0]
+        shape = self.row_warp(idx, dest).shape
+        # scale to new size
+        self.set_positions(idx,
+                           cv2.resize((oldi / (oldi.shape[0] - 1)) * (shape[0] - 1), shape[::-1]),
+                           cv2.resize((oldj / (oldj.shape[0] - 1)) * (shape[1] - 1), shape[::-1]))
+
+    def align_rigid(self, idx, oneway=False):
         dests = self.warp_dests[idx]
         shape = self.row_warp(idx, dests[0]).shape
         ipos, jpos = np.mgrid[:shape[0], :shape[1]]
@@ -57,6 +104,8 @@ class Warpinfo(object):
         mY = 0
         totalW = 0
         for dest in dests:
+            if oneway and (dest > idx):
+                continue
             d_ipos, d_jpos = self.get_warped_positions(idx, dest)
             mask = ~ np.isnan(d_ipos)
             Y = np.row_stack((d_ipos[mask], d_jpos[mask]))
@@ -114,13 +163,14 @@ class Warpinfo(object):
         # Set up least-squares problem
         nl = NonlinearWarper()
         nl.add_rigidity(*self.get_positions(src))
-        for dest in self.warp_dests[idx]:
+        for dest in self.warp_dests[src]:
             w = link_weight * (self.falloff ** abs(src - dest))
             nl.add_neighbor(*self.get_warped_positions(src, dest),
                              weight=w)
         new_i, new_j = nl.solve()
         change = max(abs(new_i - old_i).max(), abs(new_j - old_j).max())
-        print "    NONLINEAR", src, change
+        with self.hdf5_lock:
+            print "    NONLINEAR", src, change
         self.set_positions(src, new_i, new_j)
         return change
 
@@ -149,51 +199,40 @@ class Warpinfo(object):
                   cv2.BORDER_TRANSPARENT)
         return dest_i, dest_j
 
+
     def row_warp(self, src, dest):
-        wf = self.warps[src, dest]
-        if wf not in self.open_hdfs:
-            self.open_hdfs[wf] = h5py.File(wf, "r")
-        return self.open_hdfs[wf]['row_map'][...]
+        idx = self.warp_idx[src, dest]
+        with self.hdf5_lock:
+            return self.warps_hdf5['row_map'][idx, ...]
 
     def column_warp(self, src, dest):
-        wf = self.warps[src, dest]
-        if wf not in self.open_hdfs:
-            self.open_hdfs[wf] = h5py.File(wf, "r")
-        return self.open_hdfs[wf]['column_map'][...]
+        idx = self.warp_idx[src, dest]
+        with self.hdf5_lock:
+            return self.warps_hdf5['column_map'][idx, ...]
 
-    def position_file(self, idx):
-        return os.path.join(self.positions_dir,
-                            "positions.%d.hdf5" % idx)
+    def get_positions(self, idx):
+        with self.hdf5_lock:
+            return self.positions_hdf5['ipos'][idx, ...], self.positions_hdf5['jpos'][idx, ...]
+
+    def set_positions(self, idx, newipos, newjpos):
+        with self.hdf5_lock:
+            self.positions_hdf5.require_dataset('ipos', tuple([self.num_images] + list(newipos.shape)), dtype=np.float32)
+            self.positions_hdf5.require_dataset('jpos', tuple([self.num_images] + list(newipos.shape)), dtype=np.float32)
+            self.positions_hdf5['ipos'][idx, ...] = newipos
+            self.positions_hdf5['jpos'][idx, ...] = newjpos
+
+    def set_global_warp(self, idx, newipos, newjpos):
+        f = h5py.File(self.global_warp_file(idx))
+        if 'ipos' not in f.keys():
+            f.create_dataset('row_map', newipos.shape, dtype=np.float32)
+            f.create_dataset('column_map', newipos.shape, dtype=np.float32)
+        f['row_map'][...] = newipos
+        f['column_map'][...] = newjpos
+        f.close()
 
     def global_warp_file(self, idx):
         return os.path.join(self.positions_dir,
                             "global_warp.%d.hdf5" % idx)
-
-    def get_positions(self, idx):
-        pf = self.position_file(idx)
-        if pf not in self.open_hdfs:
-            self.open_hdfs[pf] = h5py.File(pf)
-        return self.open_hdfs[pf]['ipos'][...], self.open_hdfs[pf]['jpos'][...]
-
-    def set_positions(self, idx, newipos, newjpos):
-        pf = self.position_file(idx)
-        if pf not in self.open_hdfs:
-            self.open_hdfs[pf] = h5py.File(pf)
-        if 'ipos' not in self.open_hdfs[pf].keys():
-            self.open_hdfs[pf].create_dataset('ipos', newipos.shape, dtype=np.float32)
-            self.open_hdfs[pf].create_dataset('jpos', newipos.shape, dtype=np.float32)
-        self.open_hdfs[pf]['ipos'][...] = newipos
-        self.open_hdfs[pf]['jpos'][...] = newjpos
-
-    def set_global_warp(self, idx, newipos, newjpos):
-        gwf = self.global_warp_file(idx)
-        if gwf not in self.open_hdfs:
-            self.open_hdfs[gwf] = h5py.File(gwf, 'w')
-        if 'ipos' not in self.open_hdfs[gwf].keys():
-            self.open_hdfs[gwf].create_dataset('row_map', newipos.shape, dtype=np.float32)
-            self.open_hdfs[gwf].create_dataset('column_map', newipos.shape, dtype=np.float32)
-        self.open_hdfs[gwf]['row_map'][...] = newipos
-        self.open_hdfs[gwf]['column_map'][...] = newjpos
 
     def create_global_warps(self):
         orig_shape = self.get_positions(0)[0].shape
@@ -241,31 +280,61 @@ class Warpinfo(object):
             self.set_global_warp(idx, interped_i, interped_j)
 
 if __name__ == '__main__':
+    if not hasattr(threading.current_thread(), "_children"):
+        threading.current_thread()._children = weakref.WeakKeyDictionary()
+
     warpinfo = Warpinfo(sys.argv[1], positions_dir=sys.argv[2])
 
-    for idx in range(warpinfo.num_images):
-        warpinfo.init_positions(idx)
+    if len(sys.argv) == 3:
+        print "INIT"
+        for idx in range(warpinfo.num_images):
+            print "   ", idx, '/', warpinfo.num_images
+            warpinfo.init_positions(idx)
+    else:
+        print "INITEXIST"
+        oldf = h5py.File(sys.argv[3], 'r')
+        for idx in range(warpinfo.num_images):
+            print "   ", idx, '/', warpinfo.num_images
+            warpinfo.init_positions_from_existing(oldf['ipos'][idx, ...],
+                                                  oldf['jpos'][idx, ...],
+                                                  idx)
+        oldf.close()
 
-    # Quick alignment from N+1 to N
-    for idx in range(1, warpinfo.num_images):
-        warpinfo.align_rigid_single(idx, idx - 1)
+    print "INDEPENDENT SETS", warpinfo.independent_sets.keys()
 
-    # looping Rigid alignment with all neighbors, but holding 0 still
-    change = 1
-    while change > 0.25:
+    if False:
+        print "RIGID"
+        # Quick alignment from N+1 to N
+        for idx in range(1, warpinfo.num_images):
+            warpinfo.align_rigid_single(idx, idx - 1)
+
+        print "ONEWAY"
+        # looping Rigid alignment with all neighbors, but holding 0 still
         change = 0
         for idx in range(1, warpinfo.num_images):
-            change = max(warpinfo.align_rigid(idx), change)
-        print "RIGID prewarp, max delta:", change
+            change = max(warpinfo.align_rigid(idx, oneway=True), change)
+        print "ONEWAY prewarp, max delta:", change
 
+        print "LOOP RIGID"
+        # looping Rigid alignment with all neighbors, but holding 0 still
+        change = 1
+        while change > 0.25:
+            change = 0
+            for idx in range(1, warpinfo.num_images):
+                change = max(warpinfo.align_rigid(idx), change)
+            print "RIGID prewarp, max delta:", change
+
+    pool = ThreadPool(1)
     # looping nonlinear warping
-    change = 1
-    while change > 0.25:
+    change = 10
+    while change > .5:
         change = 0
-        for idx in range(warpinfo.num_images):
-            change = max(warpinfo.align_nonlinear(idx), change)
+        for s, idxs in warpinfo.independent_sets.iteritems():
+            changes = pool.map_async(warpinfo.align_nonlinear, idxs).get()
+            change = max(change, max(changes))
         print "Nonlinear adjustment, max delta:", change
 
+    sys.exit(0)
     warpinfo.create_global_warps()
 if True:
     for idx in range(warpinfo.num_images):
@@ -279,4 +348,5 @@ if True:
             xpos = pj[r, :]
             ypos = pi[r, :]
             pylab.plot(xpos, ypos, '-' + color)
+
 pylab.show()
