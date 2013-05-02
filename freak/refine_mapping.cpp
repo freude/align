@@ -20,7 +20,7 @@ void read_hdf5_image(H5File h5f, Mat &image_out, const char *name, const Rect &r
 
 #define TEMPLATE_SIZE 64
 #define WINDOW_SIZE 128
-#define STEP 16
+#define APPROXSTEP 16
 
 static inline double lerp(float a, float b, float t)
 {
@@ -77,17 +77,24 @@ int main( int argc, char** argv ) {
     read_hdf5_image(in_hdf5, row_warp, "row_map");
     read_hdf5_image(in_hdf5, col_warp, "column_map");
     
-    Mat new_row_warp = Mat::zeros(img1.rows / STEP, img1.cols / STEP, CV_32F);
-    Mat new_col_warp = Mat::zeros(img1.rows / STEP, img1.cols / STEP, CV_32F);
-    Mat match_weight = Mat::zeros(img1.rows / STEP, img1.cols / STEP, CV_32F);
-    for (int img1_row = 0; img1_row < img1.rows; img1_row += STEP) {
+    int rowsteps = (img1.rows / APPROXSTEP) + 1;
+    int colsteps = (img1.cols / APPROXSTEP) + 1;
+    float rowstepsize = float(img1.rows - 1) / (rowsteps - 1);
+    float colstepsize = float(img1.cols - 1) / (colsteps - 1);
+
+    Mat new_row_warp = Mat::zeros(rowsteps, colsteps, CV_32F);
+    Mat new_col_warp = Mat::zeros(rowsteps, colsteps, CV_32F);
+    Mat match_weight = Mat::zeros(rowsteps, colsteps, CV_32F);
+    for (int rowstep = 0; rowstep < rowsteps; rowstep++) {
+        int img1_row = cvRound(rowstep * rowstepsize);
         // cout << img1_row << " / " << img1.rows << endl;
-        float warp_i = row_warp.rows * float(img1_row) / img1.rows;
-        for (int img1_col = 0; img1_col < img1.cols; img1_col += STEP) {
-            float warp_j = row_warp.cols * float(img1_col) / img1.cols;
+        float warp_i = (row_warp.rows - 1) * float(img1_row) / (img1.rows - 1);
+        for (int colstep = 0; colstep < colsteps; colstep++) {
+            int img1_col = cvRound(colstep * colstepsize);
+            float warp_j = (row_warp.cols - 1) * float(img1_col) / (img1.cols - 1);
             
-            int img2_row = binterp(row_warp, warp_i, warp_j) * img2.rows;
-            int img2_col = binterp(col_warp, warp_i, warp_j) * img2.cols;
+            int img2_row = binterp(row_warp, warp_i, warp_j) * (img2.rows - 1);
+            int img2_col = binterp(col_warp, warp_i, warp_j) * (img2.cols - 1);
             
             // cout << "(" << img1_row << ", " << img1_col << ") maps to (" << img2_row << ", " << img2_col << ")" << endl;
 
@@ -109,13 +116,25 @@ int main( int argc, char** argv ) {
                 minMaxLoc(result, &minVal, &maxVal, &minLoc, &maxLoc, Mat());
                 meanStdDev(result, mean, stddev);
 
-                float new_row = (rlo2 + maxLoc.y) / (float) img2.rows - ((float) img1_row) / img1.rows;
-                float new_col = (clo2 + maxLoc.x) / (float) img2.cols - ((float) img1_col) / img1.cols;
-                float w = (maxVal - mean[0]) / stddev[0];
+                
+                float new_row = (rlo2 + maxLoc.y) / ((float) img2.rows - 1) - ((float) img1_row) / (img1.rows - 1);
+                float new_col = (clo2 + maxLoc.x) / ((float) img2.cols - 1) - ((float) img1_col) / (img1.cols - 1);
+                //cout << img1_row << " " << img1_col << " should map to " <<  (rlo2 + maxLoc.y) << " " << (clo2 + maxLoc.x) << endl;
+                //                cout << "    stored at " << rowstep << " " << colstep << endl;
+                float w;
+                if (stddev[0] > 0) {
+                    w = (maxVal - mean[0]) / stddev[0];
+                } else {
+                    w = 0;
+                }
 
-                new_row_warp.at<float>(img1_row / STEP, img1_col / STEP) = new_row;
-                new_col_warp.at<float>(img1_row / STEP, img1_col / STEP) = new_col;
-                match_weight.at<float>(img1_row / STEP, img1_col / STEP) = w;
+                // Keep only strongest matches
+                if (w < 3) {
+                    w = 0;
+                }
+                new_row_warp.at<float>(rowstep, colstep) = new_row;
+                new_col_warp.at<float>(rowstep, colstep) = new_col;
+                match_weight.at<float>(rowstep, colstep) = w;
                 
                 // cout << "   new (" << (int) (new_row * img2.rows) << ", " << (int) (new_col * img2.cols) << ") weight " << w << endl;
 
@@ -126,26 +145,32 @@ int main( int argc, char** argv ) {
     match_weight = match_weight.mul(match_weight);
     new_row_warp = new_row_warp.mul(match_weight);
     new_col_warp = new_col_warp.mul(match_weight);
-    GaussianBlur(new_row_warp, new_row_warp, Size(0, 0), 3);
-    GaussianBlur(new_col_warp, new_col_warp, Size(0, 0), 3);
-    GaussianBlur(match_weight, match_weight, Size(0, 0), 3);
+    // Loop enough that there should be weight everywhere.
+    // Filter radius for sigma=3 is approximately 10
+    for (int l = 0; l < MAX(match_weight.rows, match_weight.cols) / 10 + 1; l++) {
+        GaussianBlur(new_row_warp, new_row_warp, Size(0, 0), 3);
+        GaussianBlur(new_col_warp, new_col_warp, Size(0, 0), 3);
+        GaussianBlur(match_weight, match_weight, Size(0, 0), 3);
+    }
     new_row_warp = new_row_warp / match_weight;
     new_col_warp = new_col_warp / match_weight;
     
 //     Mat disp_row_warp, disp_col_warp;
-//     normalize( new_row_warp, disp_row_warp, 0, 1, NORM_MINMAX, -1, Mat() );
-//     imshow("row", disp_row_warp);
-//     normalize( new_col_warp, disp_col_warp, 0, 1, NORM_MINMAX, -1, Mat() );
-//     imshow("col", disp_col_warp);
-//     normalize( match_weight, match_weight, 0, 1, NORM_MINMAX, -1, Mat() );
-//     imshow("w", match_weight);
-//     waitKey(0);
-// 
+//      normalize( new_row_warp, disp_row_warp, 0, 1, NORM_MINMAX, -1, Mat() );
+//      imshow("row", disp_row_warp);
+//      normalize( new_col_warp, disp_col_warp, 0, 1, NORM_MINMAX, -1, Mat() );
+//      imshow("col", disp_col_warp);
+//      normalize( match_weight, match_weight, 0, 1, NORM_MINMAX, -1, Mat() );
+//      imshow("w", match_weight);
+//      waitKey(0);
+//  
     // convert from deltas to raw coords
-    for (int img1_row = 0; img1_row < img1.rows; img1_row += STEP) {
-        for (int img1_col = 0; img1_col < img1.cols; img1_col += STEP) {
-            new_row_warp.at<float>(img1_row / STEP, img1_col / STEP) += ((float) img1_row) / img1.rows;
-            new_col_warp.at<float>(img1_row / STEP, img1_col / STEP) += ((float) img1_col) / img1.cols;
+    for (int rowstep = 0; rowstep < rowsteps; rowstep++) {
+        int img1_row = cvRound(rowstep * rowstepsize);
+        for (int colstep = 0; colstep < colsteps; colstep++) {
+            int img1_col = cvRound(colstep * colstepsize);
+            new_row_warp.at<float>(rowstep, colstep) += ((float) img1_row) / (img1.rows - 1);
+            new_col_warp.at<float>(rowstep, colstep) += ((float) img1_col) / (img1.cols - 1);
         }
     }
 

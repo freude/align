@@ -156,6 +156,10 @@ int main( int argc, char** argv ) {
     float MAD_Y = abs_deviations_y[abs_deviations_y.size() / 2];
     cout << "MAD " << MAD_X << " " << MAD_Y << " " << sqrt(MAD_X * MAD_X + MAD_Y * MAD_Y) << endl;
 
+    // Keep these sane
+    MAD_X = MIN(MAD_X, 50);
+    MAD_Y = MIN(MAD_Y, 50);
+
     // filter for sane matches, those with <= 2 sigma_mad = 2 * 1.48 * MAD
     vector<DMatch> good_matches;
     for (vector<DMatch>::iterator it = matches.begin(); it != matches.end(); it++) {
@@ -166,6 +170,15 @@ int main( int argc, char** argv ) {
     }
 
     cout << "Good matches " << good_matches.size() <<endl;
+
+    vector<DMatch> goodsubset(good_matches.begin(), good_matches.begin() + 100);
+
+    if (0) { 
+        Mat showmatches;
+        drawMatches(imgA, keypointsA, imgB, keypointsB, goodsubset, showmatches);
+        imshow("matches", showmatches);
+        waitKey(0);
+    }
 
     H5File out_hdf5 = create_hdf5_file(argv[3]);
     Mat warp_map = Mat::zeros(good_matches.size(), 4, CV_32F);
