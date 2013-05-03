@@ -9,13 +9,13 @@ import pylab
 import threading
 import remap
 
-
 class Warpinfo(object):
     def __init__(self, warpfile, falloff=0.5, positions_dir="POSITIONS"):
         self.falloff = falloff
         self.positions_dir = positions_dir
         self.parse_warpfile(warpfile)
         self.hdf5_lock = threading.RLock()
+        self.corrections = {(0, 0) : (np.matrix([[1,0],[0,1]]), np.array([[0], [0]]))}
 
     def parse_warpfile(self, fname):
         f = open(fname)
@@ -60,27 +60,6 @@ class Warpinfo(object):
             cols[idx, ...] = f['column_map'][...]
             f.close()
 
-    def get_warped_positions(self, src, dest):
-        row_warp = self.row_warp(src, dest)
-        shape = row_warp.shape
-        col_warp = self.column_warp(src, dest)
-        row_warp = row_warp * (shape[0] - 1)
-        col_warp = col_warp * (shape[1] - 1)
-        pos_i, pos_j = self.get_positions(dest)
-        dest_i = (np.nan * pos_i).astype(np.float32)
-        dest_j = dest_i.copy()
-        # interpolate
-        # TODO: convert to deltas and use BORDER_REPLICATE?
-        remap.remap(pos_i,
-                    col_warp.astype(np.float32),
-                    row_warp.astype(np.float32),
-                    dest_i)
-        remap.remap(pos_j,
-                    col_warp.astype(np.float32),
-                    row_warp.astype(np.float32),
-                    dest_j)
-        return dest_i, dest_j
-
     def chain_warps(self, src, intermediate, dest):
         if (src, dest) in self.warp_idx:
             return
@@ -93,20 +72,29 @@ class Warpinfo(object):
             self.warps_hdf5['column_map'].resize(sh)
             print "done"
 
-            row_warp = self.row_warp(src, intermediate)
-            col_warp = self.column_warp(src, intermediate)
+            r1 = row_warp = self.row_warp(src, intermediate)
+            c1 = col_warp = self.column_warp(src, intermediate)
             shape = row_warp.shape
             row_warp = row_warp * (shape[0] - 1)
             col_warp = col_warp * (shape[1] - 1)
 
-            # convert to deltas
             orig_i = self.row_warp(intermediate, dest)
             orig_j = self.column_warp(intermediate, dest)
+
+            # convert to deltas
+            base_i, base_j = np.mgrid[:orig_i.shape[0], :orig_i.shape[1]]
+            base_i = base_i.astype(np.float32) / (base_i.shape[0] - 1)
+            base_j = base_j.astype(np.float32) / (base_j.shape[1] - 1)
+
+            orig_i -= base_i
+            orig_j -= base_j
 
             dest_i = np.zeros_like(orig_i)
             dest_j = np.zeros_like(orig_j)
             # interpolate
-            # TODO: convert to deltas and use BORDER_REPLICATE?
+
+            # We shouldn't really use repeat=True, here.  Instead, we should find the rigid transformation between the warps and 
+
             remap.remap(orig_i,
                         col_warp.astype(np.float32),
                         row_warp.astype(np.float32),
@@ -117,19 +105,68 @@ class Warpinfo(object):
                         row_warp.astype(np.float32),
                         dest_j,
                         repeat=True)
+
+            dest_i += r1
+            dest_j += c1
+
             self.warps_hdf5['row_map'][idx, :, :] = dest_i
             self.warps_hdf5['column_map'][idx, :, :] = dest_j
             self.warp_idx[src, dest] = idx
             self.set_chained_warp(src, dest, dest_i, dest_j)
 
+    def compute_correction(self, lo, hi):
+        fw_i = self.row_warp(lo, hi)
+        fw_j = self.column_warp(lo, hi)
+
+        base_i, base_j = np.mgrid[:fw_i.shape[0], :fw_i.shape[1]]
+        base_i = base_i.astype(np.float32) / (base_i.shape[0] - 1)
+        base_j = base_j.astype(np.float32) / (base_j.shape[1] - 1)
+
+        X = np.row_stack((base_i.ravel(), base_j.ravel()))
+        Y = np.row_stack((fw_i.ravel(), fw_j.ravel()))
+        Xmean = X.mean(axis=1).reshape((2, 1))
+        Ymean = Y.mean(axis=1).reshape((2, 1))
+        X -= Xmean
+        Y -= Ymean
+        XY = np.dot(X, Y.T)
+        u, s, vt = np.linalg.svd(XY)
+        R = np.dot(vt.T, u.T)
+        T = Ymean - np.dot(R, Xmean)
+        if lo > 0:
+            prevR, prevT = self.corrections[0, lo]
+            self.corrections[0, hi] = (np.dot(R, prevR), prevT + T)
+        self.corrections[lo, hi] = (R, T)
+
     def average_warps(self, lo, hi, dst):
         rlo = self.row_warp(lo, dst)
         clo = self.column_warp(lo, dst)
-        rhi = self.row_warp(hi, dst)
-        chi = self.column_warp(hi, dst)
+        if dst == hi:
+            rhi, chi = np.mgrid[:rlo.shape[0], :rlo.shape[1]]
+            rhi = rhi.astype(np.float32) / (rhi.shape[0] - 1)
+            chi = chi.astype(np.float32) / (chi.shape[1] - 1)
+        else:
+            rhi = self.row_warp(hi, dst)
+            chi = self.column_warp(hi, dst)
+
         wlo = float(hi - dst) / (hi - lo)
         whi = 1.0 - wlo
-        self.set_average_warp(dst, wlo * rlo + whi * rhi, wlo * clo + whi * chi)
+        rav = wlo * rlo + whi * rhi
+        cav = wlo * clo + whi * chi
+
+        R, T = self.corrections[lo, hi]
+        baseR, baseT = self.corrections[0, lo]
+        print "T", dst, T, whi * T
+        T =  whi * T + baseT
+        angle =  whi * np.arccos(R[0,0])
+        R = np.matrix([[np.cos(angle), -np.sin(angle)],
+                       [np.sin(angle), np.cos(angle)]])
+        R = np.dot(R, baseR)
+        stack = np.row_stack((rav.ravel(), cav.ravel()))
+        stack = R * stack + T
+        rav = stack[0, :].reshape(rav.shape)
+        cav = stack[1, :].reshape(rav.shape)
+
+        self.set_average_warp(dst, rav, cav)
 
     def row_warp(self, src, dest):
         idx = self.warp_idx[src, dest]
@@ -140,26 +177,6 @@ class Warpinfo(object):
         idx = self.warp_idx[src, dest]
         with self.hdf5_lock:
             return self.warps_hdf5['column_map'][idx, ...]
-
-    def get_positions(self, idx):
-        with self.hdf5_lock:
-            return self.positions_hdf5['ipos'][idx, ...], self.positions_hdf5['jpos'][idx, ...]
-
-    def set_positions(self, idx, newipos, newjpos):
-        with self.hdf5_lock:
-            self.positions_hdf5.require_dataset('ipos', tuple([self.num_images] + list(newipos.shape)), dtype=np.float32)
-            self.positions_hdf5.require_dataset('jpos', tuple([self.num_images] + list(newipos.shape)), dtype=np.float32)
-            self.positions_hdf5['ipos'][idx, ...] = newipos
-            self.positions_hdf5['jpos'][idx, ...] = newjpos
-
-    def set_global_warp(self, idx, newipos, newjpos):
-        f = h5py.File(self.global_warp_file(idx))
-        if 'ipos' not in f.keys():
-            f.create_dataset('row_map', newipos.shape, dtype=np.float32)
-            f.create_dataset('column_map', newipos.shape, dtype=np.float32)
-        f['row_map'][...] = newipos
-        f['column_map'][...] = newjpos
-        f.close()
 
     def set_chained_warp(self, src, dest, newipos, newjpos):
         fn = os.path.join(self.positions_dir,
@@ -172,7 +189,6 @@ class Warpinfo(object):
         f['column_map'][...] = newjpos
         f.close()
 
-
     def set_average_warp(self, dest, rowwarp, colwarp):
         fn = os.path.join(self.positions_dir,
                           "av.%d.hdf5" % (dest))
@@ -184,67 +200,33 @@ class Warpinfo(object):
         f['column_map'][...] = colwarp
         f.close()
 
-
-    def global_warp_file(self, idx):
-        return os.path.join(self.positions_dir,
-                            "global_warp.%d.hdf5" % idx)
-
-    def create_global_warps(self):
-        orig_shape = self.get_positions(0)[0].shape
-        def get_extrema(idx):
-            ipos, jpos = self.get_positions(idx)
-            return ipos.min(), jpos.min(), ipos.max(), jpos.max()
-        minmax = [get_extrema(idx) for idx in range(self.num_images)]
-        imin = min(m[0] for m in minmax)
-        jmin = min(m[1] for m in minmax)
-        imax = max(m[2] for m in minmax)
-        jmax = max(m[3] for m in minmax)
-        # shift everything to min 0,0
-        for idx in range(self.num_images):
-            ipos, jpos = self.get_positions(idx)
-            ipos -= imin
-            jpos -= jmin
-            self.set_positions(idx, ipos, jpos)
-        height = int(imax - imin) + 1
-        width = int(jmax - jmin) + 1
-
-        origi, origj = np.mgrid[:orig_shape[0], :orig_shape[1]]
-        origcoords = np.column_stack((origi.ravel() / float(orig_shape[0]),
-                                      origj.ravel() / float(orig_shape[1])))
-
-        for idx in range(self.num_images):
-            dest_i, dest_j = self.get_positions(idx)
-            dest_i = (dest_i / height).ravel()
-            dest_j = (dest_j / width).ravel()
-
-            print idx, "0, 0 mapped to ", dest_i[0], dest_j[0]
-
-            # interpolate as deltas
-            idt = invdisttree.Invdisttree(np.column_stack((dest_i, dest_j)),
-                                          origcoords - np.column_stack((dest_i, dest_j)))
-
-            qi, qj = np.mgrid[:height, :width]
-            query = np.column_stack((qi.ravel() / float(height), qj.ravel() / float(width)))
-            interped_ij = idt(query)
-
-            print "    q:", idt((dest_i[0], dest_j[0]))
-            print "    q:", idt((0, 0))
-
-            interped_i = interped_ij[:, 0].reshape(qi.shape) + (qi / float(height))
-            interped_j = interped_ij[:, 1].reshape(qi.shape) + (qj / float(width))
-            self.set_global_warp(idx, interped_i, interped_j)
-
 if __name__ == '__main__':
     warpinfo = Warpinfo(sys.argv[1], positions_dir=sys.argv[2])
 
-    for idx in range(1, warpinfo.num_images):
-        warpinfo.chain_warps(0, idx - 1, idx)
-        print idx
+    STEP = 30
 
-    for idx in range(warpinfo.num_images - 2, 0, -1):
-        warpinfo.chain_warps(warpinfo.num_images - 1, idx + 1, idx)
-        print idx
+    for firstim in range(0, warpinfo.num_images, 30):
+        lastim = min(firstim + STEP, warpinfo.num_images - 1)
+        print "WARPS BETWEEN", firstim, lastim
 
-    for idx in range(1, warpinfo.num_images - 1):
-        warpinfo.average_warps(0, warpinfo.num_images - 1, idx)
-        print idx
+        # We compute the warps for both endpoint images, in order to compute
+        # the rigid translation between them for later correction.
+        for idx in range(firstim + 1, lastim + 1):
+            if (idx - firstim) % 2 == 0:
+                warpinfo.chain_warps(firstim, idx - 2, idx)
+            else:
+                warpinfo.chain_warps(firstim, idx - 1, idx)
+            print "  FORWARD", idx, "to", firstim
+
+        for idx in range(lastim - 1, firstim - 1, -1):
+            if (idx - lastim) % 2 == 0:
+                warpinfo.chain_warps(lastim, idx + 2, idx)
+            else:
+                warpinfo.chain_warps(lastim, idx + 1, idx)
+            print "  BACKWARD", idx, "to", lastim
+
+        warpinfo.compute_correction(firstim, lastim)
+
+        for idx in range(firstim + 1, lastim + 1):
+            warpinfo.average_warps(firstim, lastim, idx)
+            print "  AVERAGE", idx

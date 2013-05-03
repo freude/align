@@ -23,11 +23,15 @@ for mf in mapping_files:
         continue
     print mf
     idx = int(match.group(1))
-    outfile = "out.%0.3d.tif" % idx
+    outfile = "out.%0.3d.tif" % (idx + 1)
+    print "MAP", image_files[idx], outfile
     subprocess.check_call(['show_mapping',
                            image_files[idx],
                            image_files[idx],
                            '2',
                            mf,
+                           os.path.join(out_dir, outfile)])
+    subprocess.check_call(['exiftool',
+                           '-ImageDescription=Warped from %s using %s' % (image_files[idx], mf),
                            os.path.join(out_dir, outfile)])
 
