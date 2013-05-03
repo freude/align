@@ -34,9 +34,9 @@ int main( int argc, char** argv ) {
     for (int i = 1; i < argc; i++) {
         // Load images
         double t = (double)getTickCount();
-        Mat imgA = imread(argv[1], CV_LOAD_IMAGE_GRAYSCALE );
+        Mat imgA = imread(argv[i], CV_LOAD_IMAGE_GRAYSCALE );
         if( !imgA.data ) {
-            cout<< " --(!) Error reading image " << argv[1] << endl;
+            cout<< " --(!) Error reading image " << argv[i] << endl;
             return -1;
         }
         for (int o = 0; o < OCTAVES; o++) {
@@ -56,7 +56,7 @@ int main( int argc, char** argv ) {
         kpts.push_back(keypointsA);
     }
     
-    vector<int> pairs = extractor.selectPairs(ims, kpts, 0.6);
+    vector<int> pairs = extractor.selectPairs(ims, kpts, 0.7);
     for (int i = 0; i < pairs.size(); i++) {
         cout << pairs[i] << endl;
     }
