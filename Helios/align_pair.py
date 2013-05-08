@@ -1,4 +1,6 @@
 import sys
+import threading
+from multiprocessing.pool import ThreadPool
 
 import numpy as np
 import cv2
@@ -29,7 +31,7 @@ if __name__ == '__main__':
     window_size = 128
 
     # step size for refined warps
-    step_size = 16
+    step_size = 8
 
     # TODO: parse args
 
@@ -94,23 +96,26 @@ if __name__ == '__main__':
     warp = RigidWarp(R, T)
 
     def display_warp(w, im1, im2):
-        warpedim = w.warp([im2_scales[0]], smallest1.shape)[0]
+        warpedim = w.warp([im2_scales[0]], im1.shape)[0]
         while True:
             cv2.imshow("view", warpedim.astype(smallest1.dtype))
             k = cv2.waitKey()
             if k == 27:
                 break
-            cv2.imshow("view", smallest1)
+            cv2.imshow("view", im1)
             k = cv2.waitKey()
             if k == 27:
                 break
 
+    if not hasattr(threading.current_thread(), "_children"):
+        threading.current_thread()._children = weakref.WeakKeyDictionary()
+    pool = ThreadPool(8)
 
     # coarse-to-fine warp refinement using normalized cross correlation in subimages
     for cur_octave in range(downsample_octaves, -1, -1):
         warp = refine_warp(warp, 
                            im1_scales[cur_octave], im2_scales[cur_octave],
-                           template_size, window_size, step_size)
-        display_warp(warp, im1_scales[downsample_octaves], im2_scales[downsample_octaves])
+                           template_size, window_size, step_size, pool)
+    display_warp(warp, im1_scales[downsample_octaves - 1], im2_scales[downsample_octaves - 1])
 
 

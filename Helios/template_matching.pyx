@@ -1,4 +1,5 @@
 cimport cython
+import time
 
 cdef extern from "math.h":
     double sqrt(double) nogil
@@ -81,14 +82,32 @@ cdef void _best_match(int template_row, int template_col,
     else:
         out_score[0] = 0.0
 
+@cython.boundscheck(False)
+@cython.wraparound(False)
+cpdef best_matches(int [:] template_rows, int [:] template_cols,
+                   int [:] window_rows, int [:] window_cols,
+                   int template_size, int window_size,
+                   unsigned char [:, :] template_im, unsigned char [:, :] window_im,
+                   int [:] match_rows, int [:] match_cols,
+                   float [:] match_weights):
+    cdef int idx, sz
+    sz = template_rows.size
+    with nogil:
+        for idx in range(sz):
+            _best_match(template_rows[idx], template_cols[idx],
+                        window_rows[idx], window_cols[idx],
+                        template_size, window_size,
+                        template_im, window_im,
+                        &(match_rows[idx]), &(match_cols[idx]), &(match_weights[idx]))
+
 cpdef best_match(template_row, template_col,
                window_row, window_col,
                template_size, window_size,
                tim, wim):
-    cdef int a, b
-    cdef float c
+    cdef int r, c
+    cdef float w
     _best_match(template_row, template_col,
                 window_row, window_col,
                 template_size, window_size,
-                tim, wim, &a, &b, &c)
-    return (a, b, c)
+                tim, wim, &r, &c, &w)
+    return (r, c, w)

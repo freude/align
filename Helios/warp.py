@@ -1,3 +1,5 @@
+import time
+
 import numpy as np
 import remap
 import cv2
@@ -71,47 +73,96 @@ class NonlinearWarp(Warp):
             return row_warp, column_warp
         return row_warp.copy(), column_warp.copy()
 
-def refine_warp(prev_warp, im1, im2, template_size, window_size, step_size):
+def refine_warp(prev_warp, im1, im2, template_size, window_size, step_size, pool):
     # warp im2's coordinates to im1's space
     dest_shape = (np.array(im1.shape) // step_size) + 1
-    normalized_i, normalized_j = np.ogrid[:dest_shape[0], :dest_shape[1]]
+    normalized_i, normalized_j = np.mgrid[:dest_shape[0], :dest_shape[1]]
     normalized_i = normalized_i.astype(float) / (dest_shape[0] - 1)
     normalized_j = normalized_j.astype(float) / (dest_shape[1] - 1)
     row_warp, column_warp = prev_warp.resize(dest_shape)
     orig_row_warp = row_warp.copy()
     orig_column_warp = column_warp.copy()
-    weights = np.zeros_like(row_warp)
-    for i in range(dest_shape[0]):
-        print i, '/', dest_shape[0]
-        for j in range(dest_shape[1]):
-            i1 = (im1.shape[0] - 1) * normalized_i[i, 0]
-            j1 = (im1.shape[1] - 1) * normalized_j[0, j]
-            i2 = (im2.shape[0] - 1) * row_warp[i, j]
-            j2 = (im2.shape[1] - 1) * column_warp[i, j]
-            newr, newc, w = best_match((i1, j1), (i2, j2), im1, im2, template_size, window_size)
-            # Threshold matches at 4 stdev above the mean
-            if w > 4.0:
-                # convert to deltas for better interpolation
-                row_warp[i, j] = float(newr) / (im2.shape[0] - 1) - normalized_i[i, 0]
-                column_warp[i, j] = float(newc) / (im2.shape[1] - 1) - normalized_j[0, j]
-                weights[i, j] = w
+    weights = np.zeros_like(row_warp, dtype=np.float32)
+
+    # Refine using template matching
+
+    # upper left points
+    template_i = (im1.shape[0] - 1) * normalized_i - template_size // 2
+    template_j = (im1.shape[1] - 1) * normalized_j - template_size // 2
+    window_i = (im2.shape[0] - 1) * row_warp - window_size // 2
+    window_j = (im2.shape[1] - 1) * column_warp - window_size // 2
+
+    # adjust to ensure template and windows fit
+    template_adjusted_i = np.clip(template_i, 0, im1.shape[0] - template_size).astype(np.int32)
+    template_adjusted_j = np.clip(template_j, 0, im1.shape[1] - template_size).astype(np.int32)
+    window_adjusted_i = np.clip(window_i, 0, im2.shape[0] - window_size).astype(np.int32)
+    window_adjusted_j = np.clip(window_j, 0, im2.shape[1] - window_size).astype(np.int32)
+
+    # compute offsets to be applied to template matches
+    adjustment_i = window_adjusted_i - (template_adjusted_i - template_i) + template_size // 2
+    adjustment_j = window_adjusted_j - (template_adjusted_j - template_j) + template_size // 2
+    st = time.time()
+    icoords, jcoords = np.mgrid[:dest_shape[0], :dest_shape[1]]
+
+    new_rows = np.zeros(dest_shape, np.int32)
+    new_cols = np.zeros(dest_shape, np.int32)
+    def doit(rowidx):
+        template_matching.best_matches(template_adjusted_i[rowidx, :], template_adjusted_j[rowidx, :],
+                                       window_adjusted_i[rowidx, :], window_adjusted_j[rowidx, :],
+                                       template_size, window_size,
+                                       im1, im2,
+                                       new_rows[rowidx, :], new_cols[rowidx, :], weights[rowidx, :])
+        # i, j, tr, tc, wr, wc = coords
+        # newr, newc, w = template_matching.best_match(tr, tc, wr, wc, template_size, window_size, im1, im2)
+#         otr, otc, otw= best_match(((im1.shape[0] - 1) * normalized_i[i, 0], 
+#                                    (im1.shape[1] - 1) * normalized_j[0, j]),
+#                                   ((im2.shape[0] - 1) * row_warp[i, j],
+#                                    (im2.shape[1] - 1) * column_warp[i, j]),
+#                                   im1, im2,
+#                                   template_size, window_size)
+#         print "cython adjust", adjustment_i[i, j], adjustment_j[i, j]
+#         import pdb
+#         pdb.set_trace()
+
+    newpts = pool.map_async(doit, range(dest_shape[0]))
+    newpts.wait()
+    print "took", time.time() - st
+
+    # apply adjustments, and convert to deltas
+    new_rows += adjustment_i
+    new_cols += adjustment_j
+    row_warp = new_rows.astype(np.float32) / (im2.shape[0] - 1) - normalized_i
+    column_warp = new_cols.astype(np.float32) / (im2.shape[1] - 1) - normalized_j
+
     # smooth and normalize
-    # we use weights squared 
+    # we use weights squared, and cut off anything with a score less than 4.0
+    weights[weights < 2.0] = 0.0
+    import pylab
+    pylab.figure()
+    pylab.imshow(weights > 0)
+    pylab.colorbar()
+    pylab.show()
+
     weights = weights ** 2
     weighted_r = row_warp * weights
     weighted_c = column_warp * weights
     # Loop enough that there should be weight everywhere.
     # Filter radius for sigma=3 is approximately 10
-    for iter in range(max(weights.shape) / 10 + 1):
-        weights = cv2.GaussianBlur(weights, (0, 0), 3)
-        weighted_r = cv2.GaussianBlur(weighted_r, (0, 0), 3)
-        weighted_c = cv2.GaussianBlur(weighted_c, (0, 0), 3)
+    for iter in range(max(weights.shape) / 20 + 1):
+        weights = cv2.GaussianBlur(weights, (0, 0), 5)
+        weighted_r = cv2.GaussianBlur(weighted_r, (0, 0), 5)
+        weighted_c = cv2.GaussianBlur(weighted_c, (0, 0), 5)
+    import pylab
+    pylab.figure()
+    pylab.imshow(weights)
+    pylab.colorbar()
+    pylab.show()
     # convert back from deltas
     new_r = (weighted_r / weights) + normalized_i
     new_c = (weighted_c / weights) + normalized_j
+
     # Keep the old warp values anywhere we don't have new data
     zeromask = weights == 0
-    weights[zeromask] = 1
     weighted_r[zeromask] = orig_row_warp[zeromask]
     weighted_c[zeromask] = orig_column_warp[zeromask]
     return NonlinearWarp(new_r, new_c)
@@ -144,6 +195,7 @@ def best_match(pt1, pt2, im1, im2, template_size, window_size):
     score = (match[bestr, bestc] - match.mean()) / match.std()
     if np.isnan(score):
         score = 0
+    print "python adjustment", pt1, pt2, r2 - (r1 - pt1[0]), c2 - (c1 - pt1[1])
     bestr = r2 + bestr - (r1 - pt1[0])
     bestc = c2 + bestc - (c1 - pt1[1])
     return bestr, bestc, score
