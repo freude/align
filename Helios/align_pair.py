@@ -31,7 +31,7 @@ if __name__ == '__main__':
     window_size = 128
 
     # step size for refined warps
-    step_size = 8
+    step_size = 16
 
     # TODO: parse args
 
@@ -116,6 +116,6 @@ if __name__ == '__main__':
         warp = refine_warp(warp, 
                            im1_scales[cur_octave], im2_scales[cur_octave],
                            template_size, window_size, step_size, pool)
-    display_warp(warp, im1_scales[downsample_octaves - 1], im2_scales[downsample_octaves - 1])
+        display_warp(warp, im1_scales[downsample_octaves], im2_scales[downsample_octaves])
 
 

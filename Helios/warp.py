@@ -6,6 +6,9 @@ import cv2
 import pylab
 
 import template_matching
+import ransac
+
+from scipy.ndimage.filters import gaussian_filter
 
 class Warp(object):
     def __init__(self):
@@ -40,8 +43,10 @@ class RigidWarp(Warp):
 
 
 class NonlinearWarp(Warp):
-    def __init__(self, row_warp, column_warp):
+    def __init__(self, R, T, row_warp, column_warp):
         Warp.__init__(self)
+        self.R = R
+        self.T = T
         self.row_warp = row_warp
         self.column_warp = column_warp
         assert row_warp.shape == column_warp.shape
@@ -57,6 +62,13 @@ class NonlinearWarp(Warp):
         return dests
 
     def resize(self, sz):
+        normalized_i, normalized_j = np.mgrid[:sz[0], :sz[1]]
+        normalized_i = normalized_i.astype(float) / (sz[0] - 1)
+        normalized_j = normalized_j.astype(float) / (sz[1] - 1)
+        rigid = self.R * np.row_stack((normalized_i.ravel(), normalized_j.ravel())) + self.T
+        normalized_i = rigid[0, :].A.reshape(sz)
+        normalized_j = rigid[1, :].A.reshape(sz)
+
         row_warp = self.row_warp
         column_warp = self.column_warp
         # resize the warps to be the size of the output (using remap)
@@ -70,8 +82,7 @@ class NonlinearWarp(Warp):
             remap.remap(column_warp, temp_j, temp_i, new_column)
             row_warp = new_row
             column_warp = new_column
-            return row_warp, column_warp
-        return row_warp.copy(), column_warp.copy()
+        return normalized_i + row_warp, normalized_j + column_warp
 
 def refine_warp(prev_warp, im1, im2, template_size, window_size, step_size, pool):
     # warp im2's coordinates to im1's space
@@ -112,60 +123,54 @@ def refine_warp(prev_warp, im1, im2, template_size, window_size, step_size, pool
                                        template_size, window_size,
                                        im1, im2,
                                        new_rows[rowidx, :], new_cols[rowidx, :], weights[rowidx, :])
-        # i, j, tr, tc, wr, wc = coords
-        # newr, newc, w = template_matching.best_match(tr, tc, wr, wc, template_size, window_size, im1, im2)
-#         otr, otc, otw= best_match(((im1.shape[0] - 1) * normalized_i[i, 0], 
-#                                    (im1.shape[1] - 1) * normalized_j[0, j]),
-#                                   ((im2.shape[0] - 1) * row_warp[i, j],
-#                                    (im2.shape[1] - 1) * column_warp[i, j]),
-#                                   im1, im2,
-#                                   template_size, window_size)
-#         print "cython adjust", adjustment_i[i, j], adjustment_j[i, j]
-#         import pdb
-#         pdb.set_trace()
 
     newpts = pool.map_async(doit, range(dest_shape[0]))
     newpts.wait()
     print "took", time.time() - st
 
-    # apply adjustments, and convert to deltas
+    # apply adjustments, convert to normalized coords
     new_rows += adjustment_i
     new_cols += adjustment_j
-    row_warp = new_rows.astype(np.float32) / (im2.shape[0] - 1) - normalized_i
-    column_warp = new_cols.astype(np.float32) / (im2.shape[1] - 1) - normalized_j
+    row_warp = new_rows.astype(np.float32) / (im2.shape[0] - 1)
+    column_warp = new_cols.astype(np.float32) / (im2.shape[1] - 1)
 
-    # smooth and normalize
+    # estimate rigid transformation from good matches
+    mask = weights >= 4.0
+    X = np.row_stack((normalized_i[mask], normalized_j[mask]))
+    Y = np.row_stack((row_warp[mask], column_warp[mask]))
+    R, T = ransac.estimate_rigid_transformation(X, Y)
+
+    newX = R * np.row_stack((normalized_i.ravel(), normalized_j.ravel()))  + T
+    new_normalized_i = newX[0, :].A.reshape(dest_shape)
+    new_normalized_j = newX[1, :].A.reshape(dest_shape)
+
+    # convert to residuals
+    row_warp -= new_normalized_i
+    column_warp -= new_normalized_j
+
+    # smooth and normalize residuals
     # we use weights squared, and cut off anything with a score less than 4.0
-    weights[weights < 2.0] = 0.0
-    import pylab
-    pylab.figure()
-    pylab.imshow(weights > 0)
-    pylab.colorbar()
-    pylab.show()
-
+    weights[weights < 4.0] = 0.0
     weights = weights ** 2
     weighted_r = row_warp * weights
     weighted_c = column_warp * weights
+
     # Loop enough that there should be weight everywhere.
     # Filter radius for sigma=3 is approximately 10
-    for iter in range(max(weights.shape) / 20 + 1):
-        weights = cv2.GaussianBlur(weights, (0, 0), 5)
-        weighted_r = cv2.GaussianBlur(weighted_r, (0, 0), 5)
-        weighted_c = cv2.GaussianBlur(weighted_c, (0, 0), 5)
-    import pylab
-    pylab.figure()
-    pylab.imshow(weights)
-    pylab.colorbar()
-    pylab.show()
-    # convert back from deltas
-    new_r = (weighted_r / weights) + normalized_i
-    new_c = (weighted_c / weights) + normalized_j
+    for iter in range(max(weights.shape) / 10 + 1):
+        # weights = cv2.GaussianBlur(weights, (0, 0), 5)
+        # weighted_r = cv2.GaussianBlur(weighted_r, (0, 0), 5)
+        # weighted_c = cv2.GaussianBlur(weighted_c, (0, 0), 5)
+        weights = gaussian_filter(weights, 3, mode='constant', cval=0)
+        weighted_r = gaussian_filter(weighted_r, 3, mode='constant', cval=0)
+        weighted_c = gaussian_filter(weighted_c, 3, mode='constant', cval=0)
 
-    # Keep the old warp values anywhere we don't have new data
+    # Use the rigid transformation anywhere we don't have new data
     zeromask = weights == 0
-    weighted_r[zeromask] = orig_row_warp[zeromask]
-    weighted_c[zeromask] = orig_column_warp[zeromask]
-    return NonlinearWarp(new_r, new_c)
+    weights[zeromask] = 1
+    weighted_r[zeromask] = 0
+    weighted_c[zeromask] = 0
+    return NonlinearWarp(R, T, weighted_r / weights, weighted_c / weights)
 
 def best_match(pt1, pt2, im1, im2, template_size, window_size):
     # cut out template
