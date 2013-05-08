@@ -37,7 +37,10 @@ if __name__ == '__main__':
 
     im1 = cv2.imread(sys.argv[1], flags=cv2.CV_LOAD_IMAGE_GRAYSCALE)
     im2 = cv2.imread(sys.argv[2], flags=cv2.CV_LOAD_IMAGE_GRAYSCALE)
-    outfile = sys.argv[3]
+    out_forward = sys.argv[3]
+    out_backward = sys.argv[4]
+
+    print "ALIGNING", sys.argv[1], sys.argv[2]
 
     # compute scaled versions
     im1_scales = scalespace(im1, downsample_octaves)
@@ -85,20 +88,28 @@ if __name__ == '__main__':
     matches = [m for idx, m in enumerate(matches) if dists[idx] < thresh]
     print len(matches), "after filtering"
 
-    # Create the initial warp
-    # change from normalized coords, to image coords (for R, T), then back
-    def scale(sj, si):
-        return np.matrix([[sj, 0], [0, si]])
-    pre = scale(smallest1.shape[1] - 1, smallest1.shape[0] - 1)
-    post = scale(1.0 / (smallest2.shape[1] - 1), 1.0 / (smallest2.shape[0] - 1))
-    R = post * R * pre
-    T = post * T
-    warp = RigidWarp(R, T)
+    # Create the initial warps
+    # change from normalized coords, to image coords (for R, T), then back.
+    # Keypoints are in image coords.
+    def to_normalized(shape):
+        return np.matrix([[1.0 / (shape[0] - 1), 0], [0, 1.0 / (shape[1] - 1)]])
+    def from_normalized(shape):
+        return np.matrix([[shape[0] - 1, 0], [0, shape[1] - 1]])
+
+    # Forward warp
+    pre = from_normalized(smallest1.shape)
+    post = to_normalized(smallest2.shape)
+    warp = RigidWarp(post * R * pre, post * T)
+
+    # Backward warp
+    pre = to_normalized(smallest2.shape)
+    post = from_normalized(smallest1.shape)
+    revwarp = RigidWarp(post * R.T * pre, - post * T)
 
     def display_warp(w, im1, im2):
-        warpedim = w.warp([im2_scales[0]], im1.shape)[0]
+        warpedim = w.warp([im2], im1.shape)[0]
         while True:
-            cv2.imshow("view", warpedim.astype(smallest1.dtype))
+            cv2.imshow("view", warpedim.astype(im1.dtype))
             k = cv2.waitKey()
             if k == 27:
                 break
@@ -113,9 +124,18 @@ if __name__ == '__main__':
 
     # coarse-to-fine warp refinement using normalized cross correlation in subimages
     for cur_octave in range(downsample_octaves, -1, -1):
+        print "FORWARD", cur_octave, 
         warp = refine_warp(warp, 
                            im1_scales[cur_octave], im2_scales[cur_octave],
                            template_size, window_size, step_size, pool)
-        display_warp(warp, im1_scales[downsample_octaves], im2_scales[downsample_octaves])
+
+    for cur_octave in range(downsample_octaves, -1, -1):
+        print "BACKWARD", cur_octave, 
+        revwarp = refine_warp(revwarp, 
+                              im2_scales[cur_octave], im1_scales[cur_octave],
+                              template_size, window_size, step_size, pool)
+        # display_warp(revwarp, im2_scales[downsample_octaves], im1_scales[downsample_octaves])
 
 
+    warp.save(out_forward)
+    revwarp.save(out_backward)

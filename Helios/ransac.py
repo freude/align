@@ -16,8 +16,9 @@ def ransac(pts1, pts2, matches, num_to_sample=4):
 
     num_matches = len(matches)
 
-    pts1 = np.array([pts1[m.queryIdx].pt for m in matches]).T
-    pts2 = np.array([pts2[m.trainIdx].pt for m in matches]).T
+    # put coords in i,j (= y,x in OpenCV notation) order
+    pts1 = np.array([pts1[m.queryIdx].pt for m in matches]).T[::-1, :]
+    pts2 = np.array([pts2[m.trainIdx].pt for m in matches]).T[::-1, :]
     numpts = pts1.shape[1]
 
     besterr = abs(pts1).max() ** 2

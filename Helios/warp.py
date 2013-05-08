@@ -4,6 +4,7 @@ import numpy as np
 import remap
 import cv2
 import pylab
+import h5py
 
 import template_matching
 import ransac
@@ -35,10 +36,10 @@ class RigidWarp(Warp):
         dst_i, dst_j = np.mgrid[:sz[0], :sz[1]]
         dst_i = dst_i.astype(np.float32) / (sz[0] - 1)
         dst_j = dst_j.astype(np.float32) / (sz[1] - 1)
-        coords = np.vstack((dst_j.ravel(), dst_i.ravel()))
+        coords = np.vstack((dst_i.ravel(), dst_j.ravel()))
         coords = (self.R * coords + self.T).A
-        src_j = coords[0, :].reshape(sz)
-        src_i = coords[1, :].reshape(sz)
+        src_i = coords[0, :].reshape(sz)
+        src_j = coords[1, :].reshape(sz)
         return src_i, src_j
 
 
@@ -84,6 +85,18 @@ class NonlinearWarp(Warp):
             column_warp = new_column
         return normalized_i + row_warp, normalized_j + column_warp
 
+    def save(self, filename):
+        hf = h5py.File(filename, 'w')
+        R = self.R
+        T = self.T
+        RW = self.row_warp
+        CW = self.column_warp
+        hf.create_dataset('R', R.shape, dtype=R.dtype)[...] = R
+        hf.create_dataset('T', T.shape, dtype=T.dtype)[...] = T
+        hf.create_dataset('row_warp', RW.shape, dtype=RW.dtype)[...] = RW
+        hf.create_dataset('column_warp', CW.shape, dtype=CW.dtype)[...] = CW
+        hf.close()
+
 def refine_warp(prev_warp, im1, im2, template_size, window_size, step_size, pool):
     # warp im2's coordinates to im1's space
     dest_shape = (np.array(im1.shape) // step_size) + 1
@@ -117,14 +130,14 @@ def refine_warp(prev_warp, im1, im2, template_size, window_size, step_size, pool
 
     new_rows = np.zeros(dest_shape, np.int32)
     new_cols = np.zeros(dest_shape, np.int32)
-    def doit(rowidx):
+    def match_row(rowidx):
         template_matching.best_matches(template_adjusted_i[rowidx, :], template_adjusted_j[rowidx, :],
                                        window_adjusted_i[rowidx, :], window_adjusted_j[rowidx, :],
                                        template_size, window_size,
                                        im1, im2,
                                        new_rows[rowidx, :], new_cols[rowidx, :], weights[rowidx, :])
 
-    newpts = pool.map_async(doit, range(dest_shape[0]))
+    newpts = pool.map_async(match_row, range(dest_shape[0]))
     newpts.wait()
     print "took", time.time() - st
 
@@ -172,7 +185,7 @@ def refine_warp(prev_warp, im1, im2, template_size, window_size, step_size, pool
     weighted_c[zeromask] = 0
     return NonlinearWarp(R, T, weighted_r / weights, weighted_c / weights)
 
-def best_match(pt1, pt2, im1, im2, template_size, window_size):
+def best_match_python(pt1, pt2, im1, im2, template_size, window_size):
     # cut out template
     r1, c1 = pt1
     r1 -= template_size // 2
