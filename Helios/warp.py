@@ -51,6 +51,8 @@ class NonlinearWarp(Warp):
         self.row_warp = row_warp
         self.column_warp = column_warp
         assert row_warp.shape == column_warp.shape
+        assert np.all(~ np.isnan(row_warp))
+        assert np.all(~ np.isnan(column_warp))
 
     def warp(self, sources, dest_shape, dests=None, repeat=False):
         row_warp, column_warp = self.resize(dest_shape)

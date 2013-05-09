@@ -25,7 +25,6 @@ cdef extern from "opencv2/core/core.hpp" namespace "cv":
 cdef extern from "opencv2/highgui/highgui.hpp" namespace "cv":
    void imshow(const char *name, Mat &im) nogil
 
-
 cdef extern from "opencv2/imgproc/imgproc.hpp" namespace "cv":
     void matchTemplate(Mat &, Mat &, Mat &, int) nogil
     int TM_CCORR_NORMED
@@ -61,7 +60,7 @@ cdef void meanstdmax(float *data, int count, float *out_mean, float *out_std, fl
 cdef void _best_match(int template_row, int template_col,
                       int window_row, int window_col,
                       int template_size, int window_size,
-                      unsigned char [:, :] template_im, unsigned char [:, :] window_im,
+                      unsigned char [:, ::1] template_im, unsigned char [:, ::1] window_im,
                       int *out_row, int *out_col, float *out_score) nogil:
     cdef Mat template, window, match
     cdef int maxidx
@@ -87,7 +86,7 @@ cdef void _best_match(int template_row, int template_col,
 cpdef best_matches(int [:] template_rows, int [:] template_cols,
                    int [:] window_rows, int [:] window_cols,
                    int template_size, int window_size,
-                   unsigned char [:, :] template_im, unsigned char [:, :] window_im,
+                   unsigned char [:, ::1] template_im, unsigned char [:, ::1] window_im,
                    int [:] match_rows, int [:] match_cols,
                    float [:] match_weights):
     cdef int idx, sz

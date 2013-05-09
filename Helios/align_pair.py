@@ -102,8 +102,8 @@ if __name__ == '__main__':
     warp = RigidWarp(post * R * pre, post * T)
 
     # Backward warp
-    pre = to_normalized(smallest2.shape)
-    post = from_normalized(smallest1.shape)
+    pre = from_normalized(smallest2.shape)
+    post = to_normalized(smallest1.shape)
     revwarp = RigidWarp(post * R.T * pre, - post * T)
 
     def display_warp(w, im1, im2):
@@ -128,6 +128,7 @@ if __name__ == '__main__':
         warp = refine_warp(warp, 
                            im1_scales[cur_octave], im2_scales[cur_octave],
                            template_size, window_size, step_size, pool)
+        # display_warp(warp, im1_scales[downsample_octaves - 1], im2_scales[downsample_octaves - 1])
 
     for cur_octave in range(downsample_octaves, -1, -1):
         print "BACKWARD", cur_octave, 
