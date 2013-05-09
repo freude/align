@@ -1,5 +1,6 @@
 import sys
 import threading
+import time
 from multiprocessing.pool import ThreadPool
 
 import numpy as np
@@ -35,18 +36,33 @@ if __name__ == '__main__':
 
     # TODO: parse args
 
-    im1 = cv2.imread(sys.argv[1], flags=cv2.CV_LOAD_IMAGE_GRAYSCALE)
-    im2 = cv2.imread(sys.argv[2], flags=cv2.CV_LOAD_IMAGE_GRAYSCALE)
+
+    # setup for multithreading
+    if not hasattr(threading.current_thread(), "_children"):
+        threading.current_thread()._children = weakref.WeakKeyDictionary()
+
+    pool = ThreadPool(8)
+
+    st = time.time()
+    im1 = pool.apply_async(cv2.imread, [sys.argv[1]], {'flags':cv2.CV_LOAD_IMAGE_GRAYSCALE})
+    im2 = pool.apply_async(cv2.imread, [sys.argv[2]], {'flags':cv2.CV_LOAD_IMAGE_GRAYSCALE})
+    im1 = im1.get()
+    im2 = im2.get()
+    loadtime = time.time() - st
     out_forward = sys.argv[3]
     out_backward = sys.argv[4]
 
     print "ALIGNING", sys.argv[1], sys.argv[2]
 
     # compute scaled versions
-    im1_scales = scalespace(im1, downsample_octaves)
-    im2_scales = scalespace(im2, downsample_octaves)
+    st = time.time()
+    im1_scales = pool.apply_async(scalespace, [im1, downsample_octaves])
+    im2_scales = pool.apply_async(scalespace, [im2, downsample_octaves])
+    im1_scales = im1_scales.get()
+    im2_scales = im2_scales.get()
     smallest1 = im1_scales[downsample_octaves]
     smallest2 = im2_scales[downsample_octaves]
+    scaletime = time.time() - st
 
     # detect keypoints, extract descriptors
     def detect(im, threshold=10, step=10, max_keypoints=(10 * maximum_matches)):
@@ -57,19 +73,25 @@ if __name__ == '__main__':
                 return keypoints
             threshold += step
 
+    st = time.time()
     extractor = cv2.DescriptorExtractor_create('FREAK')
-    keypoints1, descriptors1 = extractor.compute(smallest1, detect(smallest1))
-    keypoints2, descriptors2 = extractor.compute(smallest2, detect(smallest2))
+    kp1 = pool.apply_async(detect, [smallest1])
+    kp2 = pool.apply_async(detect, [smallest2])
+    # Freak doesn't seem to be threadsafe
+    keypoints1, descriptors1 = extractor.compute(smallest1, kp1.get())
+    keypoints2, descriptors2 = extractor.compute(smallest2, kp2.get())
+    detecttime = time.time() - st
 
     print len(keypoints1), len(keypoints2), "keypoints"
 
+    st = time.time()
     # match keypoints, keep only distinct matches
     matcher = cv2.DescriptorMatcher_create('BruteForce-Hamming')
     def good_match(m1, m2, thresh=0.7, eps=1e-5):
         return (m1.distance + eps) / (m2.distance + eps) < thresh
     matches = [m1 for m1, m2 in matcher.knnMatch(descriptors1, descriptors2, 2)
                if good_match(m1, m2)]
-
+    matchtime = time.time() - st
     # make sure we have enough distinct matches to proceed
     if len(matches) < minimum_matches:
         sys.stderr.write("Found too few distinct matches between {0} and {1}.\n" +
@@ -78,6 +100,7 @@ if __name__ == '__main__':
         sys.exit(1)
 
     print len(matches), "matches"
+    print "Times: load: %0.2f, scale %0.2f, detect: %0.2f, match: %0.2f" % (loadtime, scaletime, detecttime, matchtime)
 
     # compute R, T that transform kpts in 1 to 2
     MAD, R, T, dists = ransac(keypoints1, keypoints2, matches)
@@ -117,11 +140,6 @@ if __name__ == '__main__':
             k = cv2.waitKey()
             if k == 27:
                 break
-
-    if not hasattr(threading.current_thread(), "_children"):
-        threading.current_thread()._children = weakref.WeakKeyDictionary()
-    pool = ThreadPool(8)
-
     # coarse-to-fine warp refinement using normalized cross correlation in subimages
     for cur_octave in range(downsample_octaves, -1, -1):
         print "FORWARD", cur_octave, 
