@@ -85,6 +85,22 @@ class NonlinearWarp(Warp):
             column_warp = new_column
         return normalized_i + row_warp, normalized_j + column_warp
 
+    def chain(self, warp2):
+        '''compose this warp and warp2 - this warp takes x to y, warp2 y to z'''
+        Rzx = warp2.R * self.R
+        Tzx = warp2.R * self.T + warp2.T
+        # rotate the yx residuals by Rzy
+        X = np.row_stack((self.row_warp.ravel(), self.column_warp.ravel()))
+        X = warp2.R * X
+        R_row_warp = X[0, :].reshape(self.row_warp.shape).A
+        R_column_warp = X[1, :].reshape(self.column_warp.shape).A
+        # warp the zy residuals to x's space
+        warped_row_warp, warped_column_warp = self.warp([warp2.row_warp, warp2.column_warp],
+                                                        R_row_warp.shape, repeat=True)
+        return NonlinearWarp(Rzx, Tzx,
+                             R_row_warp + warped_row_warp,
+                             R_column_warp + warped_column_warp)
+
     def save(self, filename):
         hf = h5py.File(filename, 'w')
         R = self.R
@@ -96,6 +112,13 @@ class NonlinearWarp(Warp):
         hf.create_dataset('row_warp', RW.shape, dtype=RW.dtype)[...] = RW
         hf.create_dataset('column_warp', CW.shape, dtype=CW.dtype)[...] = CW
         hf.close()
+
+    @classmethod
+    def load(cls, filename):
+        hf = h5py.File(filename, 'r')
+        return cls(np.matrix(hf['R']), np.matrix(hf['T']),
+                   hf['row_warp'][...],
+                   hf['column_warp'][...])
 
 def refine_warp(prev_warp, im1, im2, template_size, window_size, step_size, pool):
     # warp im2's coordinates to im1's space
