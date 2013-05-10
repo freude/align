@@ -122,6 +122,29 @@ class NonlinearWarp(Warp):
                    hf['row_warp'][...],
                    hf['column_warp'][...])
 
+    @classmethod
+    def identity(cls, sz):
+        return cls(np.matrix([[1,0],[0,1]]), np.matrix([[0],[0]]), np.zeros(sz), np.zeros(sz))
+
+    @classmethod
+    def lerp(cls, wa, wb, t):
+        # use arcsin, as we expect the rotations to be small
+        anglea = np.arcsin(wa.R[1, 0])
+        angleb = np.arcsin(wb.R[1, 0])
+        angle = (angleb - anglea) * t + anglea
+        R = np.matrix([[np.cos(angle), - np.sin(angle)],
+                       [np.sin(angle), np.cos(angle)]])
+        T = (wb.T - wa.T) * t + wa.T
+        row_warp = (1.0 - t) * wa.row_warp + t * wb.row_warp
+        column_warp = (1.0 - t) * wa.column_warp + t * wb.column_warp
+        return NonlinearWarp(R, T, row_warp, column_warp)
+
+    def correct(self, t, final_warp):
+        self.T += t * final_warp.T
+        delta_angle = t * np.arcsin(final_warp.R[1, 0])
+        self.R = np.matrix([[np.cos(delta_angle), -np.sin(delta_angle)],
+                            [np.sin(delta_angle), np.cos(delta_angle)]]) * self.R
+
 def refine_warp(prev_warp, im1, im2, template_size, window_size, step_size, pool):
     # warp im2's coordinates to im1's space
     dest_shape = (np.array(im1.shape) // step_size) + 1
