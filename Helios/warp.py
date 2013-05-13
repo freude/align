@@ -139,11 +139,15 @@ class NonlinearWarp(Warp):
         column_warp = (1.0 - t) * wa.column_warp + t * wb.column_warp
         return NonlinearWarp(R, T, row_warp, column_warp)
 
-    def correct(self, t, final_warp):
+    def correct(self, t, final_warp, prevR, prevT):
         self.T += t * final_warp.T
+        if prevT is not None:
+            self.T += prevT
         delta_angle = t * np.arcsin(final_warp.R[1, 0])
         self.R = np.matrix([[np.cos(delta_angle), -np.sin(delta_angle)],
                             [np.sin(delta_angle), np.cos(delta_angle)]]) * self.R
+        if prevR is not None:
+            self.R = prevR * self.R
 
 def refine_warp(prev_warp, im1, im2, template_size, window_size, step_size, pool):
     # warp im2's coordinates to im1's space

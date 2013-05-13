@@ -18,34 +18,45 @@ def display_warp(w, im1, im2):
         if k == 27:
             break
 
+def interpolate_warps(images, warpdir, offset, prevR, prevT):
+    def load_warp(idx1, idx2):
+        fname = os.path.join(warpdir, "warp.%d.to.%d.hdf5" % (offset + idx1 + 1, offset + idx2 + 1))
+        print "   loading", fname
+        return NonlinearWarp.load(fname)
 
-images = [f.strip() for f in open(sys.argv[1])]
-warpdir = sys.argv[2]
+    forward_warps = dict(((idx, idx + 1), load_warp(idx, idx + 1))
+                         for idx in range(len(images) - 1))
+    backward_warps = dict(((idx + 1, idx), load_warp(idx + 1, idx))
+                          for idx in range(len(images) - 1))
 
-def load_warp(idx1, idx2):
-    fname = os.path.join(warpdir, "warp.%d.to.%d.hdf5" % (idx1 + 1, idx2 + 1))
-    return NonlinearWarp.load(fname)
+    lastim = len(images) - 1
+    for idx in range(2, len(images)):
+        fw = forward_warps[0, idx] = forward_warps[0, idx - 1].chain(forward_warps[idx - 1, idx])
 
-forward_warps = dict(((idx, idx + 1), load_warp(idx, idx + 1)) for idx in range(len(images) - 1))
-backward_warps = dict(((idx + 1, idx), load_warp(idx + 1, idx)) for idx in range(len(images) - 1))
+    for idx in range(lastim - 2, -1, -1):
+        bw = backward_warps[lastim, idx] = backward_warps[lastim, idx + 1].chain(backward_warps[idx + 1, idx])
 
-lastim = len(images) - 1
-for idx in range(2, len(images)):
-    fw = forward_warps[0, idx] = forward_warps[0, idx - 1].chain(forward_warps[idx - 1, idx])
-    print idx, fw.R[0,0], fw.T.ravel()
+    forward_warps[0, 0] = backward_warps[lastim, lastim] = NonlinearWarp.identity(forward_warps[0, 1].row_warp.shape)
+    for idx in range(len(images)):
+        t = idx / float(len(images) - 1)
+        w = NonlinearWarp.lerp(forward_warps[0, idx], backward_warps[lastim, idx], t)
+        # Correct so that the rigid transformation from 0 to lastim still occurs.
+        # Otherwise, any rigid shift between keypoints causes drift in the
+        # intermediate interpolations.
+        w.correct(t, forward_warps[0, lastim], prevR, prevT)
+        im = cv2.resize(cv2.imread(images[idx], flags=cv2.CV_LOAD_IMAGE_GRAYSCALE), (1024, 1024))
+        im = w.warp([im], im.shape)[0]
+        print "   writing", offset + idx + 1
+        cv2.imwrite(os.path.join("OUT", "out%04d.tif" % (offset + idx + 1)), im)
+    return w.R, w.T
 
-for idx in range(lastim - 2, -1, -1):
-    bw = backward_warps[lastim, idx] = backward_warps[lastim, idx + 1].chain(backward_warps[idx + 1, idx])
-    print idx, bw.R[0,0], bw.T.ravel()
+if __name__ == '__main__':
+    step = 30
+    images = [f.strip() for f in open(sys.argv[1])]
+    warpdir = sys.argv[2]
 
-forward_warps[0, 0] = backward_warps[lastim, lastim] = NonlinearWarp.identity(forward_warps[0, 1].row_warp.shape)
-for idx in range(len(images)):
-    t = idx / float(len(images) - 1)
-    w = NonlinearWarp.lerp(forward_warps[0, idx], backward_warps[lastim, idx], t)
-    # Correct so that the rigid transformation from 0 to lastim still occurs.
-    # Otherwise, any rigid shift between keypoints causes drift in the
-    # intermediate interpolations.
-    w.correct(t, forward_warps[0, lastim])
-    im = cv2.resize(cv2.imread(images[idx], flags=cv2.CV_LOAD_IMAGE_GRAYSCALE), (1024, 1024))
-    im = w.warp([im], im.shape)[0]
-    cv2.imwrite(os.path.join("OUT", "out%02d.tif" % idx), im)
+    prevR = prevT = None
+    for base in range(0, len(images), step - 1):
+        end = min(base + step, len(images))
+        print "GLOBALIZING", base + 1, end
+        prevR, prevT = interpolate_warps(images[base:end], warpdir, base, prevR, prevT)
