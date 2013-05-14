@@ -1,5 +1,6 @@
 cimport cython
 import time
+import sys
 
 cdef extern from "math.h":
     double sqrt(double) nogil
@@ -54,6 +55,12 @@ cdef void meanstdmax(float *data, int count, float *out_mean, float *out_std, fl
     out_mean[0] = M
     out_std[0] = sqrt(S / (n - 1))
 
+cdef inline bint out_of_bounds(int row, int col,
+                               int size,
+                               int maxrow, int maxcol) nogil:
+    return (row < 0) or (col < 0) or (row + size > maxrow) or (col + size > maxcol)
+
+
 @cython.boundscheck(False)
 @cython.wraparound(False)
 @cython.cdivision(True)
@@ -65,6 +72,13 @@ cdef void _best_match(int template_row, int template_col,
     cdef Mat template, window, match
     cdef int maxidx
     cdef float mean, stddev, maxval
+
+    if out_of_bounds(template_row, template_col, template_size, template_im.shape[0], template_im.shape[1]) or \
+            out_of_bounds(window_row, window_col, window_size, window_im.shape[0], window_im.shape[1]):
+        out_score[0] = -1
+        out_row[0] = out_col[0] = 0
+        return
+
     template = Mat(template_size, template_size, CV_8U,
                    &(template_im[template_row, template_col]),
                    template_im.strides[0])
@@ -72,14 +86,15 @@ cdef void _best_match(int template_row, int template_col,
                  &(window_im[window_row, window_col]),
                  window_im.strides[0])
 
+
     matchTemplate(window, template, match, TM_CCORR_NORMED)
     meanstdmax(<float *> match.ptr(0), match.rows * match.cols, &mean, &stddev, &maxval, &maxidx)
-    out_row[0] = maxidx / match.cols
-    out_col[0] = maxidx % match.cols
+    out_row[0] = window_row + maxidx / match.cols
+    out_col[0] = window_col + maxidx % match.cols
     if stddev > 0:
         out_score[0] = (maxval - mean) / stddev
     else:
-        out_score[0] = 0.0
+        out_score[0] = -1
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
@@ -91,6 +106,7 @@ cpdef best_matches(int [:] template_rows, int [:] template_cols,
                    float [:] match_weights):
     cdef int idx, sz
     sz = template_rows.size
+
     with nogil:
         for idx in range(sz):
             _best_match(template_rows[idx], template_cols[idx],
@@ -99,14 +115,3 @@ cpdef best_matches(int [:] template_rows, int [:] template_cols,
                         template_im, window_im,
                         &(match_rows[idx]), &(match_cols[idx]), &(match_weights[idx]))
 
-cpdef best_match(template_row, template_col,
-               window_row, window_col,
-               template_size, window_size,
-               tim, wim):
-    cdef int r, c
-    cdef float w
-    _best_match(template_row, template_col,
-                window_row, window_col,
-                template_size, window_size,
-                tim, wim, &r, &c, &w)
-    return (r, c, w)

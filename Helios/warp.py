@@ -11,6 +11,7 @@ import fastremap
 import ransac
 
 from scipy.ndimage.filters import gaussian_filter
+import scipy.ndimage as nd
 
 class Warp(object):
     def __init__(self):
@@ -152,6 +153,26 @@ class NonlinearWarp(Warp):
         if prevR is not None:
             self.R = prevR * self.R
 
+def fill(data, invalid=None):
+    """
+    Replace the value of invalid 'data' cells (indicated by 'invalid')
+    by the value of the nearest valid data cell
+
+    Input:
+        data:    numpy array of any dimension
+        invalid: a binary array of same shape as 'data'. True cells set where data
+                 value should be replaced.
+                 If None (default), use: invalid  = np.isnan(data)
+
+    Output:
+        Return a filled array.
+    """
+
+    if invalid is None: invalid = np.isnan(data)
+
+    ind = nd.distance_transform_edt(invalid, return_distances=False, return_indices=True)
+    return data[tuple(ind)]
+
 def refine_warp(prev_warp, im1, im2, template_size, window_size, step_size, pool):
     # warp im2's coordinates to im1's space
     dest_shape = (np.array(im1.shape) // step_size) + 1
@@ -166,28 +187,19 @@ def refine_warp(prev_warp, im1, im2, template_size, window_size, step_size, pool
     # Refine using template matching
 
     # upper left points
-    template_i = (im1.shape[0] - 1) * normalized_i - template_size // 2
-    template_j = (im1.shape[1] - 1) * normalized_j - template_size // 2
-    window_i = (im2.shape[0] - 1) * row_warp - window_size // 2
-    window_j = (im2.shape[1] - 1) * column_warp - window_size // 2
+    template_i = ((im1.shape[0] - 1) * normalized_i - template_size // 2).astype(np.int32)
+    template_j = ((im1.shape[1] - 1) * normalized_j - template_size // 2).astype(np.int32)
+    window_i = ((im2.shape[0] - 1) * row_warp - window_size // 2).astype(np.int32)
+    window_j = ((im2.shape[1] - 1) * column_warp - window_size // 2).astype(np.int32)
 
-    # adjust to ensure template and windows fit
-    template_adjusted_i = np.clip(template_i, 0, im1.shape[0] - template_size).astype(np.int32)
-    template_adjusted_j = np.clip(template_j, 0, im1.shape[1] - template_size).astype(np.int32)
-    window_adjusted_i = np.clip(window_i, 0, im2.shape[0] - window_size).astype(np.int32)
-    window_adjusted_j = np.clip(window_j, 0, im2.shape[1] - window_size).astype(np.int32)
-
-    # compute offsets to be applied to template matches
-    adjustment_i = window_adjusted_i - (template_adjusted_i - template_i) + template_size // 2
-    adjustment_j = window_adjusted_j - (template_adjusted_j - template_j) + template_size // 2
     st = time.time()
     icoords, jcoords = np.mgrid[:dest_shape[0], :dest_shape[1]]
 
     new_rows = np.zeros(dest_shape, np.int32)
     new_cols = np.zeros(dest_shape, np.int32)
     def match_row(rowidx):
-        template_matching.best_matches(template_adjusted_i[rowidx, :], template_adjusted_j[rowidx, :],
-                                       window_adjusted_i[rowidx, :], window_adjusted_j[rowidx, :],
+        template_matching.best_matches(template_i[rowidx, :], template_j[rowidx, :],
+                                       window_i[rowidx, :], window_j[rowidx, :],
                                        template_size, window_size,
                                        im1, im2,
                                        new_rows[rowidx, :], new_cols[rowidx, :], weights[rowidx, :])
@@ -196,14 +208,15 @@ def refine_warp(prev_warp, im1, im2, template_size, window_size, step_size, pool
     newpts.wait()
     print "took", time.time() - st
 
-    # apply adjustments, convert to normalized coords
-    new_rows += adjustment_i
-    new_cols += adjustment_j
+    # adjust to center, convert to normalized coords
+    new_rows += template_size // 2
+    new_cols += template_size // 2
     row_warp = new_rows.astype(np.float32) / (im2.shape[0] - 1)
     column_warp = new_cols.astype(np.float32) / (im2.shape[1] - 1)
 
     # estimate rigid transformation from good matches
-    mask = weights >= 4.0
+    medweight = np.median(weights[weights > -1])
+    mask = weights > medweight
     X = np.row_stack((normalized_i[mask], normalized_j[mask]))
     Y = np.row_stack((row_warp[mask], column_warp[mask]))
     R, T = ransac.estimate_rigid_transformation(X, Y)

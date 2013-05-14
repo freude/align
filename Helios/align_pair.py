@@ -28,8 +28,8 @@ if __name__ == '__main__':
     minimum_matches = 20
 
     # template and window sizes for normalized cross-correlation
-    template_size = 64
-    window_size = 128
+    template_size = 96
+    window_size = 160
 
     # step size for refined warps
     step_size = 16
@@ -67,7 +67,7 @@ if __name__ == '__main__':
     # detect keypoints, extract descriptors
     def detect(im, threshold=10, step=10, max_keypoints=(10 * maximum_matches)):
         while True:
-            detector = cv2.BRISK(threshold, 0, 1)
+            detector = cv2.BRISK(threshold, 0)
             keypoints = detector.detect(im)
             if len(keypoints) < max_keypoints:
                 return keypoints
