@@ -7,6 +7,7 @@ import pylab
 import h5py
 
 import template_matching
+import fastremap
 import ransac
 
 from scipy.ndimage.filters import gaussian_filter
@@ -55,19 +56,18 @@ class NonlinearWarp(Warp):
         assert np.all(~ np.isnan(column_warp))
 
     def warp(self, sources, dest_shape, dests=None, repeat=False):
-        row_warp, column_warp = self.resize(dest_shape)
-        src_i = row_warp * (sources[0].shape[0] - 1)
-        src_j = column_warp * (sources[0].shape[1] - 1)
         if dests is None:
-            dests = [np.zeros(dest_shape) for s in sources]
+            dests = [np.zeros(dest_shape, dtype=s.dtype) for s in sources]
         for s, d in zip(sources, dests):
-            remap.remap(s, src_j, src_i, d, repeat=repeat)
+            fastremap.remap(s, d, self.R, self.T,
+                            self.row_warp.astype(np.float32), self.column_warp.astype(np.float32),
+                            repeat)
         return dests
 
     def resize(self, sz):
         normalized_i, normalized_j = np.mgrid[:sz[0], :sz[1]]
-        normalized_i = normalized_i.astype(float) / (sz[0] - 1)
-        normalized_j = normalized_j.astype(float) / (sz[1] - 1)
+        normalized_i = normalized_i.astype(np.float32) / (sz[0] - 1)
+        normalized_j = normalized_j.astype(np.float32) / (sz[1] - 1)
         rigid = self.R * np.row_stack((normalized_i.ravel(), normalized_j.ravel())) + self.T
         normalized_i = rigid[0, :].A.reshape(sz)
         normalized_j = rigid[1, :].A.reshape(sz)
@@ -76,8 +76,8 @@ class NonlinearWarp(Warp):
         column_warp = self.column_warp
         # resize the warps to be the size of the output (using remap)
         if row_warp.shape != tuple(sz):
-            temp_i = np.linspace(0, row_warp.shape[0] - 1, sz[0]).reshape((-1, 1))
-            temp_j = np.linspace(0, row_warp.shape[1] - 1, sz[1]).reshape((1, -1))
+            temp_i = np.linspace(0, row_warp.shape[0] - 1, sz[0]).reshape((-1, 1)).astype(np.float32)
+            temp_j = np.linspace(0, row_warp.shape[1] - 1, sz[1]).reshape((1, -1)).astype(np.float32)
             temp_i, temp_j = np.broadcast_arrays(temp_i, temp_j)
             new_row = np.zeros(sz, dtype=np.float32)
             new_column = new_row.copy()
@@ -118,9 +118,12 @@ class NonlinearWarp(Warp):
     @classmethod
     def load(cls, filename):
         hf = h5py.File(filename, 'r')
-        return cls(np.matrix(hf['R']), np.matrix(hf['T']),
-                   hf['row_warp'][...],
-                   hf['column_warp'][...])
+        R = np.matrix(hf['R'])
+        T = np.matrix(hf['T'])
+        rw = hf['row_warp'][...]
+        cw = hf['column_warp'][...]
+        hf.close()
+        return cls(R, T, rw, cw)
 
     @classmethod
     def identity(cls, sz):
