@@ -1,4 +1,5 @@
 import sys
+import os
 import threading
 import time
 from multiprocessing.pool import ThreadPool
@@ -43,14 +44,18 @@ if __name__ == '__main__':
 
     pool = ThreadPool(8)
 
+    out_forward = sys.argv[3]
+    out_backward = sys.argv[4]
+
+    if os.path.exists(out_forward) and os.path.exists(out_backward):
+        sys.exit(0)
+
     st = time.time()
     im1 = pool.apply_async(cv2.imread, [sys.argv[1]], {'flags':cv2.CV_LOAD_IMAGE_GRAYSCALE})
     im2 = pool.apply_async(cv2.imread, [sys.argv[2]], {'flags':cv2.CV_LOAD_IMAGE_GRAYSCALE})
     im1 = im1.get()
     im2 = im2.get()
     loadtime = time.time() - st
-    out_forward = sys.argv[3]
-    out_backward = sys.argv[4]
 
     print "ALIGNING", sys.argv[1], sys.argv[2]
 

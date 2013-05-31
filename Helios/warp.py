@@ -55,6 +55,8 @@ class NonlinearWarp(Warp):
         assert row_warp.shape == column_warp.shape
         assert np.all(~ np.isnan(row_warp))
         assert np.all(~ np.isnan(column_warp))
+        assert np.all(~ np.isnan(R))
+        assert np.all(~ np.isnan(T))
 
     def warp(self, sources, dest_shape, dests=None, repeat=False):
         if dests is None:
