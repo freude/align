@@ -175,7 +175,7 @@ def fill(data, invalid=None):
     ind = nd.distance_transform_edt(invalid, return_distances=False, return_indices=True)
     return data[tuple(ind)]
 
-def refine_warp(prev_warp, im1, im2, template_size, window_size, step_size, pool):
+def refine_warp(prev_warp, im1, im2, template_size, window_size, step_size, pool, nothreads=False):
     # warp im2's coordinates to im1's space
     dest_shape = (np.array(im1.shape) // step_size) + 1
     normalized_i, normalized_j = np.mgrid[:dest_shape[0], :dest_shape[1]]
@@ -205,11 +205,18 @@ def refine_warp(prev_warp, im1, im2, template_size, window_size, step_size, pool
                                        template_size, window_size,
                                        im1, im2,
                                        new_rows[rowidx, :], new_cols[rowidx, :], weights[rowidx, :])
+        return rowidx
 
-    newpts = pool.map_async(match_row, range(dest_shape[0]))
-    newpts.wait()
+    if nothreads:
+        for rr in range(dest_shape[0]):
+            match_row(rr)
+    else:
+        newpts = pool.map_async(match_row, range(dest_shape[0]))
+        newpts.wait()
     print "took", time.time() - st
+    print "weights min/med/max", weights.min(), np.median(weights), weights.max(), "with", np.sum(weights < 0), "bad of", weights.size
 
+    orig_weights = weights.copy()
     # adjust to center, convert to normalized coords
     new_rows += template_size // 2
     new_cols += template_size // 2
@@ -218,7 +225,7 @@ def refine_warp(prev_warp, im1, im2, template_size, window_size, step_size, pool
 
     # estimate rigid transformation from good matches
     medweight = np.median(weights[weights > -1])
-    mask = weights > medweight
+    mask = weights >= medweight
     X = np.row_stack((normalized_i[mask], normalized_j[mask]))
     Y = np.row_stack((row_warp[mask], column_warp[mask]))
     R, T = ransac.estimate_rigid_transformation(X, Y)

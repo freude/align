@@ -22,7 +22,7 @@ def scalespace(im, octaves):
 if __name__ == '__main__':
     # default values
     # number of times to halve the image initially
-    downsample_octaves = 4
+    downsample_octaves = 5
 
     # number of keypoint matches to keep, minimum to require
     maximum_matches = 1000
@@ -30,10 +30,10 @@ if __name__ == '__main__':
 
     # template and window sizes for normalized cross-correlation
     template_size = 96
-    window_size = 160
+    window_size = 256
 
     # step size for refined warps
-    step_size = 16
+    step_size = 32
 
     # TODO: parse args
 
@@ -53,8 +53,8 @@ if __name__ == '__main__':
     st = time.time()
     im1 = pool.apply_async(cv2.imread, [sys.argv[1]], {'flags':cv2.CV_LOAD_IMAGE_GRAYSCALE})
     im2 = pool.apply_async(cv2.imread, [sys.argv[2]], {'flags':cv2.CV_LOAD_IMAGE_GRAYSCALE})
-    im1 = im1.get()
-    im2 = im2.get()
+    im1 = im1.get()[3249:47465, 5099:34750]
+    im2 = im2.get()[3249:47465, 5099:34750]
     loadtime = time.time() - st
 
     print "ALIGNING", sys.argv[1], sys.argv[2]
@@ -137,25 +137,25 @@ if __name__ == '__main__':
     def display_warp(w, im1, im2):
         warpedim = w.warp([im2], im1.shape)[0]
         while True:
-            cv2.imshow("view", warpedim.astype(im1.dtype))
+            cv2.imshow("view", warpedim.astype(im1.dtype).T)
             k = cv2.waitKey()
             if k == 27:
                 break
-            cv2.imshow("view", im1)
+            cv2.imshow("view", im1.T)
             k = cv2.waitKey()
             if k == 27:
                 break
     # coarse-to-fine warp refinement using normalized cross correlation in subimages
     for cur_octave in range(downsample_octaves, -1, -1):
-        print "FORWARD", cur_octave, 
-        warp = refine_warp(warp, 
+        print "FORWARD", cur_octave,
+        warp = refine_warp(warp,
                            im1_scales[cur_octave], im2_scales[cur_octave],
                            template_size, window_size, step_size, pool)
         # display_warp(warp, im1_scales[downsample_octaves - 1], im2_scales[downsample_octaves - 1])
 
     for cur_octave in range(downsample_octaves, -1, -1):
-        print "BACKWARD", cur_octave, 
-        revwarp = refine_warp(revwarp, 
+        print "BACKWARD", cur_octave,
+        revwarp = refine_warp(revwarp,
                               im2_scales[cur_octave], im1_scales[cur_octave],
                               template_size, window_size, step_size, pool)
         # display_warp(revwarp, im2_scales[downsample_octaves], im1_scales[downsample_octaves])

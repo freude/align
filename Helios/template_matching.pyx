@@ -67,7 +67,7 @@ cdef inline bint out_of_bounds(int row, int col,
 cdef void _best_match(int template_row, int template_col,
                       int window_row, int window_col,
                       int template_size, int window_size,
-                      unsigned char [:, ::1] template_im, unsigned char [:, ::1] window_im,
+                      unsigned char [:, :] template_im, unsigned char [:, :] window_im,
                       int *out_row, int *out_col, float *out_score) nogil:
     cdef Mat template, window, match
     cdef int maxidx
@@ -94,14 +94,14 @@ cdef void _best_match(int template_row, int template_col,
     if stddev > 0:
         out_score[0] = (maxval - mean) / stddev
     else:
-        out_score[0] = -1
+        out_score[0] = -2
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
 cpdef best_matches(int [:] template_rows, int [:] template_cols,
                    int [:] window_rows, int [:] window_cols,
                    int template_size, int window_size,
-                   unsigned char [:, ::1] template_im, unsigned char [:, ::1] window_im,
+                   unsigned char [:, :] template_im, unsigned char [:, :] window_im,
                    int [:] match_rows, int [:] match_cols,
                    float [:] match_weights):
     cdef int idx, sz
