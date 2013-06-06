@@ -1,12 +1,13 @@
 import sys
 import re
-import json
+import gc
 
 import numpy as np
 import cv2
 
 import template_matching
 import ransac
+import weakref
 
 # setup for multithreading
 import threading
@@ -27,7 +28,7 @@ def coords(filename):
 def angle_from_rotation_matrix(R):
     return np.arcsin(R[1, 0])
 
-def rigid_overlap(imf1, imf2, overlap, dr=0, dc=0):
+def rigid_overlap(imf1, imf2, overlap, dr=0, dc=0, pool=None):
     assert dr or dc
     im1 = cv2.imread(imf1, flags=cv2.CV_LOAD_IMAGE_GRAYSCALE)
     # extract subimage and make a new copy to free up memory
@@ -37,6 +38,8 @@ def rigid_overlap(imf1, imf2, overlap, dr=0, dc=0):
     else:
         im1 = im1[:, -overlap:].copy()
     im2 = cv2.imread(imf2, flags=cv2.CV_LOAD_IMAGE_GRAYSCALE)
+
+    gc.collect()
 
     # grid of template locations (upper left corners)
     trows, tcols = np.mgrid[0:im1.shape[0]:STEP,
@@ -61,11 +64,10 @@ def rigid_overlap(imf1, imf2, overlap, dr=0, dc=0):
                                        new_rows[rowidx, :], new_cols[rowidx, :], scores[rowidx, :])
 
     nothreads = False
-    if nothreads:
+    if pool is None:
         for rr in range(trows.shape[0]):
             match_row(rr)
     else:
-        pool = ThreadPool(8)
         newpts = pool.map_async(match_row, range(trows.shape[0]))
         newpts.wait()
 
@@ -93,6 +95,9 @@ if __name__ == '__main__':
 
     outfile = sys.argv.pop(0)
 
+    pool = ThreadPool(8)
+
+
     imcoords = dict((coords(imf), imf) for imf in sys.argv)
     maxrow = max(c[0] for c in imcoords.keys())
     maxcol = max(c[1] for c in imcoords.keys())
@@ -107,7 +112,8 @@ if __name__ == '__main__':
             if r > 0:
                 Rr, Tr = rigid_overlap(imcoords[r - 1, c], imcoords[r, c],
                                        overlap,
-                                       dr=1, dc=0)
+                                       dr=1, dc=0,
+                                       pool=pool)
                 if c == 0:
                     R[r, c] = R[r - 1, c] * Rr
                     T[r, c] = T[r - 1, c] + Tr
@@ -115,7 +121,8 @@ if __name__ == '__main__':
             if c > 0:
                 Rc, Tc = rigid_overlap(imcoords[r, c - 1], imcoords[r, c],
                                        overlap,
-                                       dr=0, dc=1)
+                                       dr=0, dc=1,
+                                       pool=pool)
                 if r == 0:
                     R[r, c] = R[r, c - 1] * Rc
                     T[r, c] = T[r, c - 1] + Tc
